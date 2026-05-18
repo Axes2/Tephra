@@ -7,25 +7,62 @@ import net.neoforged.fml.ModContainer;
 import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.fml.common.Mod;
 import net.neoforged.fml.event.lifecycle.FMLClientSetupEvent;
+import net.neoforged.neoforge.client.event.ClientTickEvent;
+import net.neoforged.neoforge.client.event.ViewportEvent;
 import net.neoforged.neoforge.client.gui.ConfigurationScreen;
 import net.neoforged.neoforge.client.gui.IConfigScreenFactory;
 
-// This class will not load on dedicated servers. Accessing client side code from here is safe.
 @Mod(value = Tephra.MODID, dist = Dist.CLIENT)
-// You can use EventBusSubscriber to automatically register all static methods in the class annotated with @SubscribeEvent
 @EventBusSubscriber(modid = Tephra.MODID, value = Dist.CLIENT)
 public class TephraClient {
+
+    // Global tracking intensity for our custom screenshake engine
+    public static float volcanoShakeIntensity = 0.0f;
+
     public TephraClient(ModContainer container) {
-        // Allows NeoForge to create a config screen for this mod's configs.
-        // The config screen is accessed by going to the Mods screen > clicking on your mod > clicking on config.
-        // Do not forget to add translations for your config options to the en_us.json file.
         container.registerExtensionPoint(IConfigScreenFactory.class, ConfigurationScreen::new);
     }
 
     @SubscribeEvent
     static void onClientSetup(FMLClientSetupEvent event) {
-        // Some client setup code
         Tephra.LOGGER.info("HELLO FROM CLIENT SETUP");
-        Tephra.LOGGER.info("MINECRAFT NAME >> {}", Minecraft.getInstance().getUser().getName());
+    }
+
+    @SubscribeEvent
+    public static void onClientTick(ClientTickEvent.Pre event) {
+        // Reset the calculation intensity threshold at the start of every tick
+        // so volcanoes can dynamically refresh proximity math
+        volcanoShakeIntensity = 0.0f;
+    }
+
+    @SubscribeEvent
+    public static void onComputeCameraAngles(ViewportEvent.ComputeCameraAngles event) {
+        if (volcanoShakeIntensity > 0.0f) {
+            long gameTime = Minecraft.getInstance().level != null ? Minecraft.getInstance().level.getGameTime() : 0;
+
+            // FIXED: Wrapped the addition in parentheses to cast the final double sum back down to a float
+            float time = (float) (gameTime + event.getPartialTick());
+
+            // Authentic, jagged earthquake simulation using high-frequency out-of-sync trigonometry waves
+            float shakeX = (float) Math.sin(time * 1.5f) * volcanoShakeIntensity * 3.5f;
+            float shakeY = (float) Math.cos(time * 1.3f) * volcanoShakeIntensity * 3.5f;
+            float shakeZ = (float) Math.sin(time * 1.7f) * volcanoShakeIntensity * 1.5f;
+
+            // Apply directly into the viewport translation matrices
+            event.setPitch(event.getPitch() + shakeX);
+            event.setYaw(event.getYaw() + shakeY);
+            event.setRoll(event.getRoll() + shakeZ);
+        }
+    }
+    @SubscribeEvent
+    public static void onRegisterParticleProviders(net.neoforged.neoforge.client.event.RegisterParticleProvidersEvent event) {
+        event.registerSpriteSet(com.axes.tephra.registry.TephraParticleTypes.VOLCANO_ASH.get(),
+                com.axes.tephra.client.particle.VolcanoParticles.AshParticle.Provider::new);
+
+        event.registerSpriteSet(com.axes.tephra.registry.TephraParticleTypes.LAVA_SPARK.get(),
+                com.axes.tephra.client.particle.VolcanoParticles.SparkParticle.Provider::new);
+
+        event.registerSpriteSet(com.axes.tephra.registry.TephraParticleTypes.VOLCANO_STEAM.get(),
+                com.axes.tephra.client.particle.VolcanoParticles.SteamParticle.Provider::new);
     }
 }

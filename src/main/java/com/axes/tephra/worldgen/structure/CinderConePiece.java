@@ -97,16 +97,14 @@ public class CinderConePiece extends StructurePiece {
                             if (y == height - craterDepth + 1) {
 
                                 if (relX == 0 && relZ == 0) {
-                                    // 1. Fetch the block safely via direct lookup
-                                    net.minecraft.world.level.block.Block coreBlock = net.minecraft.core.registries.BuiltInRegistries.BLOCK.get(
-                                            net.minecraft.resources.ResourceLocation.fromNamespaceAndPath(com.axes.tephra.Tephra.MODID, "volcano_core")
-                                    );
+                                    // 1. Now 100% safe to fetch directly from your registered holder!
+                                    net.minecraft.world.level.block.Block coreBlock = com.axes.tephra.block.TephraBlocks.VOLCANO_CORE.get();
+                                    net.minecraft.world.level.block.state.BlockState coreState = coreBlock.defaultBlockState();
 
                                     // 2. Write the block state into the chunk primer
-                                    net.minecraft.world.level.block.state.BlockState coreState = coreBlock.defaultBlockState();
                                     level.setBlock(currentPos, coreState, 2);
 
-                                    // 3. FIXED: Manually build the BlockEntity and inject it into the ProtoChunk's map
+                                    // 3. Build and manually inject the block entity into the ProtoChunk
                                     if (coreBlock instanceof net.minecraft.world.level.block.EntityBlock entityBlock) {
                                         net.minecraft.world.level.block.entity.BlockEntity be = entityBlock.newBlockEntity(currentPos, coreState);
                                         if (be != null) {

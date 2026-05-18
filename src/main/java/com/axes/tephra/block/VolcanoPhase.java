@@ -4,6 +4,7 @@ import net.minecraft.util.StringRepresentable;
 
 public enum VolcanoPhase implements StringRepresentable {
     DORMANT("dormant"),
+    ACTIVE("active"),
     RUMBLING("rumbling"),
     ERUPTING("erupting");
 

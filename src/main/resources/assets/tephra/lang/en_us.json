@@ -9,5 +9,8 @@
   "tephra.configuration.items": "Item List",
   "tephra.configuration.logDirtBlock": "Log Dirt Block",
   "tephra.configuration.magicNumberIntroduction": "Magic Number Text",
-  "tephra.configuration.magicNumber": "Magic Number"
+  "tephra.configuration.magicNumber": "Magic Number",
+
+  "subtitles.tephra.volcano_rumble": "Volcano rumbles ominously",
+  "subtitles.tephra.volcano_erupt": "Volcano erupts violently"
 }

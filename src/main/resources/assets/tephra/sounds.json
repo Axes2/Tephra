@@ -1,0 +1,16 @@
+{
+  "volcano_rumble": {
+    "category": "block",
+    "subtitle": "subtitles.tephra.volcano_rumble",
+    "sounds": [
+      "tephra:volcano_rumble"
+    ]
+  },
+  "volcano_erupt": {
+    "category": "block",
+    "subtitle": "subtitles.tephra.volcano_erupt",
+    "sounds": [
+      "tephra:volcano_erupt"
+    ]
+  }
+}
