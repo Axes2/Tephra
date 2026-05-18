@@ -6,7 +6,8 @@ public enum VolcanoPhase implements StringRepresentable {
     DORMANT("dormant"),
     ACTIVE("active"),
     RUMBLING("rumbling"),
-    ERUPTING("erupting");
+    ERUPTING("erupting"),
+    RECOVERY("recovery"); // --- ADD THIS LINE ---
 
     private final String name;
 

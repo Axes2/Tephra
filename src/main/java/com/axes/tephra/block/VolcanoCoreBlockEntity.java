@@ -84,14 +84,12 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
                 }
             }
 
-            // 2. INTERMEDIATE "ACTIVE" PHASE: Spawns clean, fast-evaporating white steam plumes
+            // 2. INTERMEDIATE "ACTIVE" PHASE: Spawns clean, fast-evaporating white custom steam plumes
             if (currentPhase == VolcanoPhase.ACTIVE) {
-                // Lowered tick frequency to % 8 so particles are much fewer and spaced out
                 if (level.getGameTime() % 8 == 0) {
                     double spreadX = (level.random.nextDouble() - 0.5) * 6.0;
                     double spreadZ = (level.random.nextDouble() - 0.5) * 6.0;
 
-                    // Relaxed outward explosive spray vectors for a gentle thermal hiss
                     double blastX = (level.random.nextDouble() - 0.5) * 0.22;
                     double blastZ = (level.random.nextDouble() - 0.5) * 0.22;
                     double blastY = 0.30 + level.random.nextDouble() * 0.15; // Mild upward drift energy
@@ -103,42 +101,47 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
                 return;
             }
 
-            // 3. SUPERCHARGED NATIVE TEPHRA CINEMATIC PARTICLE ENGINE OVERHAUL
-            if (currentPhase == VolcanoPhase.RUMBLING || currentPhase == VolcanoPhase.ERUPTING) {
+            // 3. PHASE-BASED VISUAL ROUTING CUSTOM ENGINE OVERHAUL
+            if (currentPhase == VolcanoPhase.RUMBLING || currentPhase == VolcanoPhase.ERUPTING || currentPhase == VolcanoPhase.RECOVERY) {
 
-                // Read the volcano's coordinate grid to lock down its deterministic personality configuration
                 boolean isBurstingType = Math.abs(pos.hashCode()) % 2 == 1;
 
-                // Spawning Native Organic Expanding Ash Plumes
-                int smokeDensity = currentPhase == VolcanoPhase.ERUPTING ? 12 : 2;
+                if (currentPhase == VolcanoPhase.RUMBLING) {
+                    // RUMBLING PHASE: Less prominent, thinner, medium-gray warning plumes building up
+                    if (level.getGameTime() % 2 == 0) {
+                        double spreadX = (level.random.nextDouble() - 0.5) * 8.0;
+                        double spreadZ = (level.random.nextDouble() - 0.5) * 8.0;
 
-                // Strombolian Bursting variants puff extra thick smoke during their recharging build-up cycles
-                if (isBurstingType && currentPhase == VolcanoPhase.ERUPTING) {
-                    int cycleTick = (int)((level.getGameTime() + Math.abs(pos.hashCode())) % 140);
-                    if (cycleTick < 60) {
-                        smokeDensity = 24;
+                        double blastX = (level.random.nextDouble() - 0.5) * 0.35;
+                        double blastZ = (level.random.nextDouble() - 0.5) * 0.35;
+                        double blastY = 0.40 + level.random.nextDouble() * 0.25;
+
+                        level.addParticle(com.axes.tephra.registry.TephraParticleTypes.RUMBLING_ASH.get(),
+                                pos.getX() + 0.5 + spreadX, pos.getY() + 1.2, pos.getZ() + 0.5 + spreadZ,
+                                blastX, blastY, blastZ);
                     }
                 }
 
-                for (int i = 0; i < smokeDensity; i++) {
-                    double spreadX = (level.random.nextDouble() - 0.5) * 10.0;
-                    double spreadZ = (level.random.nextDouble() - 0.5) * 10.0;
+                else if (currentPhase == VolcanoPhase.ERUPTING) {
+                    // ERUPTING PHASE: Dense, deep black pyroclastic slate clouds
+                    int smokeDensity = isBurstingType && ((level.getGameTime() + Math.abs(pos.hashCode())) % 140) < 60 ? 24 : 12;
 
-                    // Generate a wide outward explosion cone profile
-                    double blastX = (level.random.nextDouble() - 0.5) * 0.65;
-                    double blastZ = (level.random.nextDouble() - 0.5) * 0.65;
-                    double blastY = 0.55 + level.random.nextDouble() * 0.35;
+                    for (int i = 0; i < smokeDensity; i++) {
+                        double spreadX = (level.random.nextDouble() - 0.5) * 10.0;
+                        double spreadZ = (level.random.nextDouble() - 0.5) * 10.0;
 
-                    // Spawning our custom native ash (starts at Y + 1.2 to interlock cleanly under the lava lake)
-                    level.addParticle(com.axes.tephra.registry.TephraParticleTypes.VOLCANO_ASH.get(),
-                            pos.getX() + 0.5 + spreadX, pos.getY() + 1.2, pos.getZ() + 0.5 + spreadZ,
-                            blastX, blastY, blastZ);
-                }
+                        double blastX = (level.random.nextDouble() - 0.5) * 0.65;
+                        double blastZ = (level.random.nextDouble() - 0.5) * 0.65;
+                        double blastY = 0.55 + level.random.nextDouble() * 0.35;
 
-                // Spawning Native Custom Lava Fountain Jetting
-                if (currentPhase == VolcanoPhase.ERUPTING) {
+                        level.addParticle(com.axes.tephra.registry.TephraParticleTypes.VOLCANO_ASH.get(),
+                                pos.getX() + 0.5 + spreadX, pos.getY() + 1.2, pos.getZ() + 0.5 + spreadZ,
+                                blastX, blastY, blastZ);
+                    }
+
+                    // Native Custom Lava Fountain Jetting Calculations
                     if (!isBurstingType) {
-                        // KILAUEA PROFILE: Continuous, steady upward liquid lava stream
+                        // KILAUEA PROFILE: Continuous, steady upward liquid lava streams
                         for (int i = 0; i < 48; i++) {
                             double spawnOffsetX = (level.random.nextDouble() - 0.5) * 3.5;
                             double spawnOffsetZ = (level.random.nextDouble() - 0.5) * 3.5;
@@ -165,7 +168,6 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
                             widthModifier = 0.5;
                         }
                         else if (cycleTick >= 80 && cycleTick < 95) {
-                            // THE EXPLOSIVE MAGMA SURGE! (Triple density, supercharged launch arcs)
                             burstsCount = 110;
                             speedModifier = 1.65;
                             widthModifier = 1.60;
@@ -190,11 +192,27 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
                         }
                     }
                 }
+
+                else if (currentPhase == VolcanoPhase.RECOVERY) {
+                    // RECOVERY PHASE: Sparse, gentle, fading ash-white soot poofs as the caldera cools down
+                    if (level.getGameTime() % 5 == 0) {
+                        double spreadX = (level.random.nextDouble() - 0.5) * 6.0;
+                        double spreadZ = (level.random.nextDouble() - 0.5) * 6.0;
+
+                        double blastX = (level.random.nextDouble() - 0.5) * 0.20;
+                        double blastZ = (level.random.nextDouble() - 0.5) * 0.20;
+                        double blastY = 0.30 + level.random.nextDouble() * 0.15;
+
+                        level.addParticle(com.axes.tephra.registry.TephraParticleTypes.RECOVERY_ASH.get(),
+                                pos.getX() + 0.5 + spreadX, pos.getY() + 1.5, pos.getZ() + 0.5 + spreadZ,
+                                blastX, blastY, blastZ);
+                    }
+                }
             }
             return;
         }
 
-        // --- SERVER SIDE: Branching Logic State Machine & Operational Telemetry ---
+        // --- SERVER SIDE: Stochastic State Machine & Operational HUD Telemetry ---
         blockEntity.phaseTicks++;
 
         if (level.getGameTime() % 10 == 0) {
@@ -202,7 +220,7 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
                     currentPhase.getSerializedName().toUpperCase(),
                     blockEntity.phaseTicks,
                     currentPhase == VolcanoPhase.DORMANT ? blockEntity.targetDormantTicks :
-                            (currentPhase == VolcanoPhase.ACTIVE ? 1200 : (currentPhase == VolcanoPhase.RUMBLING ? 1200 : 2400)));
+                            (currentPhase == VolcanoPhase.ERUPTING ? 2400 : 1200)); // Active, Rumbling, and Recovery map to 1200
 
             for (Player player : level.players()) {
                 if (player.blockPosition().closerThan(pos, 200)) {
@@ -232,7 +250,6 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
         switch (currentPhase) {
             case DORMANT -> {
                 if (blockEntity.phaseTicks >= blockEntity.targetDormantTicks) {
-                    // 60% chance to enter the silent steam phase, 40% chance to skip straight to rumbling pressure
                     if (level.random.nextFloat() < 0.60f) {
                         blockEntity.setPhase(level, pos, state, VolcanoPhase.ACTIVE);
                     } else {
@@ -242,7 +259,6 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
             }
             case ACTIVE -> {
                 if (blockEntity.phaseTicks >= 1200) {
-                    // 50% chance to build into a full eruption pipeline, 50% chance to safely cool back down
                     if (level.random.nextFloat() < 0.50f) {
                         blockEntity.setPhase(level, pos, state, VolcanoPhase.RUMBLING);
                     } else {
@@ -258,14 +274,18 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
             }
             case ERUPTING -> {
                 if (blockEntity.phaseTicks >= 2400) {
+                    blockEntity.setPhase(level, pos, state, VolcanoPhase.RECOVERY);
+                }
+            }
+            case RECOVERY -> {
+                if (blockEntity.phaseTicks >= 1200) {
                     blockEntity.setPhase(level, pos, state, VolcanoPhase.DORMANT);
-                    blockEntity.targetDormantTicks = 2400 + level.random.nextInt(3600);
+                    blockEntity.targetDormantTicks = 3600 + level.random.nextInt(4800);
                 }
             }
         }
     }
 
-    // CHANGED: Restored modifier pathing back to public so cheat commands function properly
     public void setPhase(Level level, BlockPos pos, BlockState state, VolcanoPhase phase) {
         VolcanoPhase oldPhase = state.getValue(VolcanoCoreBlock.PHASE);
 

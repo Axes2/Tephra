@@ -64,5 +64,11 @@ public class TephraClient {
 
         event.registerSpriteSet(com.axes.tephra.registry.TephraParticleTypes.VOLCANO_STEAM.get(),
                 com.axes.tephra.client.particle.VolcanoParticles.SteamParticle.Provider::new);
+
+        event.registerSpriteSet(com.axes.tephra.registry.TephraParticleTypes.RUMBLING_ASH.get(),
+                com.axes.tephra.client.particle.VolcanoParticles.RumblingAshParticle.Provider::new);
+
+        event.registerSpriteSet(com.axes.tephra.registry.TephraParticleTypes.RECOVERY_ASH.get(),
+                com.axes.tephra.client.particle.VolcanoParticles.RecoveryAshParticle.Provider::new);
     }
 }

@@ -16,6 +16,13 @@ public class TephraParticleTypes {
     public static final DeferredHolder<ParticleType<?>, SimpleParticleType> VOLCANO_ASH =
             PARTICLE_TYPES.register("volcano_ash", () -> new SimpleParticleType(true));
 
+    // Add these alongside your existing particle definitions:
+    public static final DeferredHolder<ParticleType<?>, SimpleParticleType> RUMBLING_ASH =
+            PARTICLE_TYPES.register("rumbling_ash", () -> new SimpleParticleType(true));
+
+    public static final DeferredHolder<ParticleType<?>, SimpleParticleType> RECOVERY_ASH =
+            PARTICLE_TYPES.register("recovery_ash", () -> new SimpleParticleType(true));
+
     // Add this declaration alongside your existing particle registries:
     public static final DeferredHolder<ParticleType<?>, SimpleParticleType> VOLCANO_STEAM =
             PARTICLE_TYPES.register("volcano_steam", () -> new SimpleParticleType(true));
