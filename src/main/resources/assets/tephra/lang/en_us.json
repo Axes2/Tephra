@@ -1,0 +1,13 @@
+{
+  "itemGroup.tephra": "Example Mod Tab",
+  "block.tephra.example_block": "Example Block",
+  "item.tephra.example_item": "Example Item",
+
+  "tephra.configuration.title": "Tephra Configs",
+  "tephra.configuration.section.tephra.common.toml": "Tephra Configs",
+  "tephra.configuration.section.tephra.common.toml.title": "Tephra Configs",
+  "tephra.configuration.items": "Item List",
+  "tephra.configuration.logDirtBlock": "Log Dirt Block",
+  "tephra.configuration.magicNumberIntroduction": "Magic Number Text",
+  "tephra.configuration.magicNumber": "Magic Number"
+}
