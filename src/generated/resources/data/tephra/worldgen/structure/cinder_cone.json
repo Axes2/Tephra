@@ -1,0 +1,6 @@
+{
+  "type": "tephra:cinder_cone",
+  "biomes": "tephra:cinder_wastes",
+  "spawn_overrides": {},
+  "step": "surface_structures"
+}

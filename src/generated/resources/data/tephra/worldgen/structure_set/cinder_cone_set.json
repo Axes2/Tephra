@@ -1,0 +1,14 @@
+{
+  "placement": {
+    "type": "minecraft:random_spread",
+    "salt": 84736294,
+    "separation": 16,
+    "spacing": 32
+  },
+  "structures": [
+    {
+      "structure": "tephra:cinder_cone",
+      "weight": 1
+    }
+  ]
+}

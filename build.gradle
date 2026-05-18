@@ -27,6 +27,12 @@ sourceSets.main.resources {
 }
 
 repositories {
+    maven {
+        url = "https://maven.blamejared.com/"
+    }
+    maven {
+        url = "https://maven.theillusivec4.top/"
+    }
     // Add here additional repositories if required by some of the dependencies below.
 }
 
@@ -118,6 +124,8 @@ configurations {
 }
 
 dependencies {
+    // Add Lodestone repository and dependency
+    implementation "team.lodestar.lodestone:lodestone:1.21.1-1.7.0.285"
     // Example optional mod dependency with JEI
     // The JEI API is declared for compile time use, while the full JEI artifact is used at runtime
     // compileOnly "mezz.jei:jei-${mc_version}-common-api:${jei_version}"
@@ -173,9 +181,7 @@ publishing {
         }
     }
     repositories {
-        maven {
-            url "file://${project.projectDir}/repo"
-        }
+
     }
 }
 
