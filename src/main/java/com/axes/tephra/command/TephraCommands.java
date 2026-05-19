@@ -13,10 +13,13 @@ import com.axes.tephra.block.TephraBlocks;
 import com.axes.tephra.worldgen.VolcanoSpawnValidator;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
+import net.minecraft.commands.SharedSuggestionProvider;
+import net.minecraft.commands.arguments.coordinates.BlockPosArgument;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.levelgen.Heightmap;
@@ -25,6 +28,7 @@ import net.minecraft.world.phys.HitResult;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.neoforge.event.RegisterCommandsEvent;
+import com.mojang.brigadier.arguments.StringArgumentType;
 
 import java.util.Optional;
 
@@ -48,9 +52,30 @@ public class TephraCommands {
                                 .executes(TephraCommands::setVolcanoPhase)
                         )
                 )
-                .then(Commands.literal("spawn")
-                        .executes(TephraCommands::spawnVolcano)
-                )
+                                .then(Commands.literal("spawn")
+                                        .then(Commands.argument("pos", BlockPosArgument.blockPos())
+                                                .then(Commands.argument("type", StringArgumentType.word())
+                                                        .suggests((context, builder) -> SharedSuggestionProvider.suggest(new String[]{"cinder_cone", "shield"}, builder))
+                                                        .executes(context -> {
+                                                            BlockPos pos = BlockPosArgument.getLoadedBlockPos(context, "pos");
+                                                            String typeStr = StringArgumentType.getString(context, "type");
+
+                                                            VolcanoType type = typeStr.equalsIgnoreCase("shield") ? VolcanoType.SHIELD : VolcanoType.CINDER_CONE;
+
+                                                            Level level = context.getSource().getLevel();
+                                                            level.setBlockAndUpdate(pos, TephraBlocks.VOLCANO_CORE.get().defaultBlockState());
+
+                                                            if (level.getBlockEntity(pos) instanceof VolcanoCoreBlockEntity core) {
+                                                                core.setVolcanoType(type);
+                                                            }
+
+                                                            context.getSource().sendSuccess(() -> Component.literal("Spawned " + typeStr + " volcano at " + pos.toShortString()), true);
+                                                            return 1;
+                                                        })
+                                                )
+                                        )
+                                )
+
                 .then(Commands.literal("advance")
                         .then(Commands.argument("amount", IntegerArgumentType.integer(1))
                                 .executes(TephraCommands::advanceVolcano)

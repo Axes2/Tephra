@@ -44,4 +44,5 @@ public class TephraDataGenerator {
                 new DatapackBuiltinEntriesProvider(packOutput, lookupProvider, builder, Set.of(Tephra.MODID))
         );
     }
+
 }

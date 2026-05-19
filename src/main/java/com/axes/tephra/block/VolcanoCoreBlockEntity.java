@@ -206,12 +206,15 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
         }
 
         // Clock State Transitions Machine
+        // Clock State Transitions Machine
         switch (currentPhase) {
             case INCUBATING -> {
                 // Handled directly inside the profile strategy class to allow custom birth variations!
             }
             case DORMANT -> {
-                if (blockEntity.phaseTicks >= blockEntity.targetDormantTicks) {
+                // Queries the active profile for the duration, defaulting to the dynamically generated targetDormantTicks
+                int dormantDuration = blockEntity.activeProfile.getPhaseDurationTicks(VolcanoPhase.DORMANT, level.random, blockEntity.targetDormantTicks);
+                if (blockEntity.phaseTicks >= dormantDuration) {
                     if (level.random.nextFloat() < 0.60f) {
                         blockEntity.setPhase(level, pos, state, VolcanoPhase.ACTIVE);
                     } else {
@@ -220,7 +223,8 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
                 }
             }
             case ACTIVE -> {
-                if (blockEntity.phaseTicks >= 1200) {
+                int activeDuration = blockEntity.activeProfile.getPhaseDurationTicks(VolcanoPhase.ACTIVE, level.random, 1200);
+                if (blockEntity.phaseTicks >= activeDuration) {
                     if (level.random.nextFloat() < 0.50f) {
                         blockEntity.setPhase(level, pos, state, VolcanoPhase.RUMBLING);
                     } else {
@@ -230,17 +234,20 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
                 }
             }
             case RUMBLING -> {
-                if (blockEntity.phaseTicks >= 1200) {
+                int rumblingDuration = blockEntity.activeProfile.getPhaseDurationTicks(VolcanoPhase.RUMBLING, level.random, 1200);
+                if (blockEntity.phaseTicks >= rumblingDuration) {
                     blockEntity.setPhase(level, pos, state, VolcanoPhase.ERUPTING);
                 }
             }
             case ERUPTING -> {
-                if (blockEntity.phaseTicks >= 2400) {
+                int eruptingDuration = blockEntity.activeProfile.getPhaseDurationTicks(VolcanoPhase.ERUPTING, level.random, 2400);
+                if (blockEntity.phaseTicks >= eruptingDuration) {
                     blockEntity.setPhase(level, pos, state, VolcanoPhase.RECOVERY);
                 }
             }
             case RECOVERY -> {
-                if (blockEntity.phaseTicks >= 1200) {
+                int recoveryDuration = blockEntity.activeProfile.getPhaseDurationTicks(VolcanoPhase.RECOVERY, level.random, 1200);
+                if (blockEntity.phaseTicks >= recoveryDuration) {
                     blockEntity.setPhase(level, pos, state, VolcanoPhase.DORMANT);
                     blockEntity.targetDormantTicks = 3600 + level.random.nextInt(4800);
                 }

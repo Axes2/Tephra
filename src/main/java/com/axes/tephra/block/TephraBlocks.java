@@ -5,10 +5,12 @@ import net.minecraft.core.registries.Registries;
 import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockBehaviour;
 import net.minecraft.world.level.material.MapColor;
 import net.minecraft.world.level.material.PushReaction;
 import net.neoforged.bus.api.IEventBus;
+import net.neoforged.neoforge.registries.DeferredBlock;
 import net.neoforged.neoforge.registries.DeferredHolder;
 import net.neoforged.neoforge.registries.DeferredRegister;
 
@@ -57,6 +59,11 @@ public class TephraBlocks {
                     .instabreak()
                     .pushReaction(PushReaction.DESTROY)
                     .noOcclusion() // Prevents the game from culling adjacent faces of standard blocks
+            ));
+
+    public static final DeferredHolder<Block, Block> LAYERED_BASALT = registerBlock("layered_basalt",
+            () -> new LayeredBasaltBlock(BlockBehaviour.Properties.ofFullCopy(net.minecraft.world.level.block.Blocks.BASALT)
+                    .noOcclusion() // Add this so the layers don't cull blocks underneath them
             ));
 
     private static <T extends Block> DeferredHolder<Block, T> registerBlock(String name, Supplier<T> block) {

@@ -2,6 +2,7 @@ package com.axes.tephra;
 
 import com.axes.tephra.block.TephraBlockEntities;
 import com.axes.tephra.block.TephraBlocks;
+import com.axes.tephra.config.TephraConfig;
 import com.axes.tephra.worldgen.TephraFeatures;
 import com.axes.tephra.worldgen.structure.TephraStructures;
 import org.slf4j.Logger;
@@ -40,7 +41,7 @@ public class Tephra {
         NeoForge.EVENT_BUS.register(this);
 
         // 4. Register Configs
-        modContainer.registerConfig(ModConfig.Type.COMMON, Config.SPEC);
+        modContainer.registerConfig(ModConfig.Type.COMMON, TephraConfig.COMMON_SPEC);
     }
 
     private void commonSetup(FMLCommonSetupEvent event) {

@@ -9,4 +9,8 @@ import net.minecraft.world.level.block.state.BlockState;
 public interface VolcanoProfile {
     void tickClient(Level level, BlockPos pos, BlockState state, VolcanoPhase phase, VolcanoCoreBlockEntity blockEntity);
     void tickServer(Level level, BlockPos pos, BlockState state, VolcanoPhase phase, VolcanoCoreBlockEntity blockEntity);
+    // Add this to your existing interface
+    default int getPhaseDurationTicks(VolcanoPhase phase, net.minecraft.util.RandomSource random, int defaultTarget) {
+        return defaultTarget; // By default, fallback to the hardcoded entity variables
+    }
 }
