@@ -7,6 +7,7 @@ import net.minecraft.world.item.Item;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockBehaviour;
 import net.minecraft.world.level.material.MapColor;
+import net.minecraft.world.level.material.PushReaction;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.neoforge.registries.DeferredHolder;
 import net.neoforged.neoforge.registries.DeferredRegister;
@@ -46,6 +47,16 @@ public class TephraBlocks {
                     .lightLevel((state) -> 12) // Gives it a hot, incandescent light emission
                     .randomTicks() // CRITICAL: Registers this block with the server's asynchronous chunk ticker
                     .requiresCorrectToolForDrops()
+            ));
+
+    public static final DeferredHolder<Block, FlowingLavaBlock> FLOWING_LAVA = BLOCKS.register("flowing_lava",
+            () -> new FlowingLavaBlock(BlockBehaviour.Properties.of()
+                    .mapColor(MapColor.LAPIS) // Match lava's map color
+                    .replaceable()
+                    .noCollission()
+                    .instabreak()
+                    .pushReaction(PushReaction.DESTROY)
+                    .noOcclusion() // Prevents the game from culling adjacent faces of standard blocks
             ));
 
     private static <T extends Block> DeferredHolder<Block, T> registerBlock(String name, Supplier<T> block) {

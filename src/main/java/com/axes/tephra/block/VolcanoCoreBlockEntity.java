@@ -40,10 +40,14 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
 
     public void setVolcanoType(VolcanoType type) {
         this.volcanoType = type;
-        // Lazy-load profile switches as you introduce Shield and Stratovolcano variants
+
+        // Lazy-load profile switches
         if (type == VolcanoType.CINDER_CONE) {
-            this.activeProfile = new CinderConeProfile();
+            this.activeProfile = new com.axes.tephra.block.profile.CinderConeProfile();
+        } else if (type == VolcanoType.SHIELD) {
+            this.activeProfile = new com.axes.tephra.block.profile.ShieldVolcanoProfile();
         }
+
         setChanged();
     }
 

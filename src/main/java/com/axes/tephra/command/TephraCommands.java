@@ -145,16 +145,19 @@ public class TephraCommands {
 
         world.setBlock(corePos, state, 3);
 
+        // ... (inside spawnVolcano method)
+
         if (world.getBlockEntity(corePos) instanceof VolcanoCoreBlockEntity coreBe) {
-            coreBe.setVolcanoType(VolcanoType.CINDER_CONE);
+            // CHANGE: Swap from CINDER_CONE to SHIELD for testing
+            coreBe.setVolcanoType(VolcanoType.SHIELD);
             coreBe.setPhaseTicks(0);
             coreBe.setPlumeHeight(1);
 
-            // FIX: Generate a random base radius width between 9.0 and 21.0 blocks on creation
+            // Generate a random base radius width between 9.0 and 21.0 blocks on creation
             float randomRadius = 9.0f + world.random.nextFloat() * 12.0f;
             coreBe.setCraterBaseRadius(randomRadius);
 
-            source.sendSuccess(() -> Component.literal("§a[Tephra] Incubating Cinder Cone spawned deep below at Y=" + corePos.getY()), true);
+            source.sendSuccess(() -> Component.literal("§a[Tephra] Incubating Shield Volcano spawned deep below at Y=" + corePos.getY()), true);
             return 1;
         }
         return 0;

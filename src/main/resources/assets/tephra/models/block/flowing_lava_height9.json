@@ -1,0 +1,25 @@
+{
+  "parent": "minecraft:block/block",
+  "render_type": "minecraft:translucent",
+  "textures": {
+    "particle": "minecraft:block/lava_still",
+    "bottom": "minecraft:block/lava_still",
+    "top": "minecraft:block/lava_still",
+    "side": "minecraft:block/lava_flow"
+  },
+  "elements": [
+    {
+      "from": [ 0, 0, 0 ],
+      "to": [ 16, 9, 16 ],
+      "shade": false,
+      "faces": {
+        "down":  { "texture": "#bottom", "cullface": "down" },
+        "up":    { "texture": "#top" },
+        "north": { "texture": "#side", "cullface": "north" },
+        "south": { "texture": "#side", "cullface": "south" },
+        "west":  { "texture": "#side", "cullface": "west" },
+        "east":  { "texture": "#side", "cullface": "east" }
+      }
+    }
+  ]
+}
