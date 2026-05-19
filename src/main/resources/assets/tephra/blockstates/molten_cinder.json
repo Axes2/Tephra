@@ -1,0 +1,8 @@
+{
+  "variants": {
+    "age=0": { "model": "tephra:block/molten_cinder" },
+    "age=1": { "model": "tephra:block/molten_cinder2" },
+    "age=2": { "model": "tephra:block/molten_cinder3" },
+    "age=3": { "model": "tephra:block/molten_cinder4" }
+  }
+}

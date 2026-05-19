@@ -3,11 +3,12 @@ package com.axes.tephra.block;
 import net.minecraft.util.StringRepresentable;
 
 public enum VolcanoPhase implements StringRepresentable {
+    INCUBATING("incubating"), // The deep mantle plume formation phase
     DORMANT("dormant"),
     ACTIVE("active"),
     RUMBLING("rumbling"),
     ERUPTING("erupting"),
-    RECOVERY("recovery"); // --- ADD THIS LINE ---
+    RECOVERY("recovery");
 
     private final String name;
 

@@ -25,6 +25,28 @@ public class TephraBlocks {
                     .strength(-1.0F, 3600000.0F)
                     .noLootTable()
             ));
+    public static final DeferredHolder<Block, Block> SOLID_CINDER = registerBlock("solid_cinder",
+            () -> new Block(BlockBehaviour.Properties.of()
+                    .mapColor(MapColor.COLOR_BLACK)
+                    .strength(2.5F, 6.0F)
+                    .requiresCorrectToolForDrops()
+            ));
+
+    public static final DeferredHolder<Block, Block> ASH_LAYER = registerBlock("ash_layer",
+            () -> new AshLayerBlock(BlockBehaviour.Properties.of()
+                    .mapColor(MapColor.COLOR_GRAY)
+                    .strength(0.2F)
+                    .noOcclusion() // Crucial for translucent/layered rendering math
+            ));
+
+    public static final DeferredHolder<Block, Block> MOLTEN_CINDER = registerBlock("molten_cinder",
+            () -> new MoltenCinderBlock(BlockBehaviour.Properties.of()
+                    .mapColor(MapColor.COLOR_RED)
+                    .strength(2.0F, 6.0F)
+                    .lightLevel((state) -> 12) // Gives it a hot, incandescent light emission
+                    .randomTicks() // CRITICAL: Registers this block with the server's asynchronous chunk ticker
+                    .requiresCorrectToolForDrops()
+            ));
 
     private static <T extends Block> DeferredHolder<Block, T> registerBlock(String name, Supplier<T> block) {
         DeferredHolder<Block, T> toReturn = BLOCKS.register(name, block);

@@ -8,16 +8,12 @@ public class VolcanoParticles {
 
     // 1. BILLOWING EXPANDING ASH PLUME (ORGANIC FLUID TRAJECTORY)
     public static class AshParticle extends TextureSheetParticle {
-        // Match the global upper atmosphere wind constants used by the block entity
         private static final double WIND_X = 0.09;
         private static final double WIND_Z = 0.05;
-
         private final float rotSpeed;
 
         protected AshParticle(ClientLevel level, double x, double y, double z, double vx, double vy, double vz) {
             super(level, x, y, z);
-
-            // FIXED: Accept the initial explosive outward cone velocities directly from spawn parameters
             this.xd = vx;
             this.yd = vy;
             this.zd = vz;
@@ -26,7 +22,6 @@ public class VolcanoParticles {
             this.quadSize = 0.8F + random.nextFloat() * 0.6F;
             this.hasPhysics = true;
 
-            // FIXED: Introduce random rotation speeds so the individual smoke sprites churn and roll
             this.rotSpeed = (random.nextFloat() - 0.5F) * 0.04F;
             this.roll = random.nextFloat() * ((float)Math.PI * 2F);
             this.oRoll = this.roll;
@@ -47,7 +42,6 @@ public class VolcanoParticles {
             this.yo = this.y;
             this.zo = this.z;
 
-            // FIXED: Track the rotation states frame-by-frame to prevent interpolation jitter
             this.oRoll = this.roll;
             this.roll += this.rotSpeed;
 
@@ -61,12 +55,8 @@ public class VolcanoParticles {
             this.alpha = 1.0F - (progress * progress);
 
             this.move(this.xd, this.yd, this.zd);
-
-            // Retain the asymptotic vertical slow-down for our high-altitude plateau ceiling
             this.yd *= 0.994D;
 
-            // FIXED: Fluid Drag Transition. Outward blast velocity dissipates by 4% per tick,
-            // while smoothly accelerating to match the uniform horizontal wind drift speed.
             this.xd = (this.xd * 0.96F) + (WIND_X * 0.04);
             this.zd = (this.zd * 0.96F) + (WIND_Z * 0.04);
         }
@@ -95,128 +85,17 @@ public class VolcanoParticles {
             this.yd = vy;
             this.zd = vz;
 
-            // TIGHT ENVELOPE: Lives for only 2 to 3.5 seconds (40-70 ticks) before evaporating
             this.lifetime = 200 + random.nextInt(100);
             this.quadSize = 0.4F + random.nextFloat() * 0.3F;
             this.hasPhysics = true;
 
-            // Retain organic texture rolling/churning
             this.rotSpeed = (random.nextFloat() - 0.5F) * 0.05F;
             this.roll = random.nextFloat() * ((float)Math.PI * 2F);
             this.oRoll = this.roll;
 
-            // COLOR TINT OVERRIDE: Intense white/light-vapor channels
             this.rCol = 0.92F + random.nextFloat() * 0.06F;
             this.gCol = 0.92F + random.nextFloat() * 0.06F;
             this.bCol = 0.94F + random.nextFloat() * 0.05F;
-        }
-
-        // 4. THINNER, MEDIUM-GRAY RUMBLING ASH PLUME
-        public static class RumblingAshParticle extends TextureSheetParticle {
-            private static final double WIND_X = 0.09;
-            private static final double WIND_Z = 0.05;
-            private final float rotSpeed;
-
-            protected RumblingAshParticle(ClientLevel level, double x, double y, double z, double vx, double vy, double vz) {
-                super(level, x, y, z);
-                this.xd = vx * 0.5D; // Tighter horizontal explosion spread
-                this.yd = vy * 0.7D; // Lower initial vertical launch speed
-                this.zd = vz * 0.5D;
-
-                this.lifetime = 400 + random.nextInt(150); // Shorter duration than eruption cloud
-                this.quadSize = 0.6F + random.nextFloat() * 0.4F;
-                this.hasPhysics = true;
-                this.rotSpeed = (random.nextFloat() - 0.5F) * 0.03F;
-                this.roll = random.nextFloat() * ((float)Math.PI * 2F);
-                this.oRoll = this.roll;
-
-                // COLOR TINT: Light/Medium Geological Slate Gray
-                this.rCol = 0.38F + random.nextFloat() * 0.05F;
-                this.gCol = 0.36F + random.nextFloat() * 0.05F;
-                this.bCol = 0.36F + random.nextFloat() * 0.05F;
-            }
-
-            @Override
-            public ParticleRenderType getRenderType() { return ParticleRenderType.PARTICLE_SHEET_TRANSLUCENT; }
-
-            @Override
-            public void tick() {
-                this.xo = this.x; this.yo = this.y; this.zo = this.z;
-                this.oRoll = this.roll; this.roll += this.rotSpeed;
-                if (this.age++ >= this.lifetime) { this.remove(); return; }
-
-                float progress = (float) this.age / this.lifetime;
-                this.quadSize = (0.8F + progress * 8.0F); // Caps out smaller (8x instead of 15x)
-                this.alpha = 1.0F - (progress * progress);
-
-                this.move(this.xd, this.yd, this.zd);
-                this.yd *= 0.990D; // Approaches apex slightly quicker to stay lower
-                this.xd = (this.xd * 0.96F) + (WIND_X * 0.04);
-                this.zd = (this.zd * 0.96F) + (WIND_Z * 0.04);
-            }
-
-            public static class Provider implements ParticleProvider<SimpleParticleType> {
-                private final SpriteSet sprites;
-                public Provider(SpriteSet sprites) { this.sprites = sprites; }
-                @Override
-                public Particle createParticle(SimpleParticleType type, ClientLevel level, double x, double y, double z, double vx, double vy, double vz) {
-                    RumblingAshParticle p = new RumblingAshParticle(level, x, y, z, vx, vy, vz);
-                    p.pickSprite(sprites);
-                    return p;
-                }
-            }
-        }
-
-        // 5. GENTLE, DISPERSING RECOVERY SOOT POOFS
-        public static class RecoveryAshParticle extends TextureSheetParticle {
-            private static final double WIND_X = 0.09;
-            private static final double WIND_Z = 0.05;
-
-            protected RecoveryAshParticle(ClientLevel level, double x, double y, double z, double vx, double vy, double vz) {
-                super(level, x, y, z);
-                this.xd = vx * 0.3D;
-                this.yd = vy * 0.4D; // Lazily drifts upward from cooling vents
-                this.zd = vz * 0.3D;
-
-                this.lifetime = 350 + random.nextInt(200); // Dissolves relatively quickly
-                this.quadSize = 0.5F + random.nextFloat() * 0.3F;
-                this.hasPhysics = true;
-                this.alpha = 0.65F; // Starts out partially transparent/thin
-
-                // COLOR TINT: Fading, dusty ash-white soot
-                this.rCol = 0.55F + random.nextFloat() * 0.05F;
-                this.gCol = 0.55F + random.nextFloat() * 0.05F;
-                this.bCol = 0.57F + random.nextFloat() * 0.04F;
-            }
-
-            @Override
-            public ParticleRenderType getRenderType() { return ParticleRenderType.PARTICLE_SHEET_TRANSLUCENT; }
-
-            @Override
-            public void tick() {
-                this.xo = this.x; this.yo = this.y; this.zo = this.z;
-                if (this.age++ >= this.lifetime) { this.remove(); return; }
-
-                float progress = (float) this.age / this.lifetime;
-                this.quadSize = (0.6F + progress * 4.5F); // Stays light and wispy
-                this.alpha = 0.65F * (1.0F - progress);
-
-                this.move(this.xd, this.yd, this.zd);
-                this.yd *= 0.985D;
-                this.xd = (this.xd * 0.95F) + (WIND_X * 0.05);
-                this.zd = (this.zd * 0.95F) + (WIND_Z * 0.05);
-            }
-
-            public static class Provider implements ParticleProvider<SimpleParticleType> {
-                private final SpriteSet sprites;
-                public Provider(SpriteSet sprites) { this.sprites = sprites; }
-                @Override
-                public Particle createParticle(SimpleParticleType type, ClientLevel level, double x, double y, double z, double vx, double vy, double vz) {
-                    RecoveryAshParticle p = new RecoveryAshParticle(level, x, y, z, vx, vy, vz);
-                    p.pickSprite(sprites);
-                    return p;
-                }
-            }
         }
 
         @Override
@@ -238,16 +117,11 @@ public class VolcanoParticles {
             }
 
             float progress = (float) this.age / this.lifetime;
-
-            // MINIMIZED SCALING: Only expands up to 3.5x its initial radius as it rises
             this.quadSize = (0.5F + progress * 3.5F);
-
-            // Linear progress drop ensures a quick, clean evaporation fade line
             this.alpha = 1.0F - progress;
 
             this.move(this.xd, this.yd, this.zd);
 
-            // Asymptotic deceleration: drops speed quicker than dark ash to stall lower
             this.yd *= 0.97D;
             this.xd = (this.xd * 0.94F) + (WIND_X * 0.06);
             this.zd = (this.zd * 0.94F) + (WIND_Z * 0.06);
@@ -265,6 +139,112 @@ public class VolcanoParticles {
         }
     }
 
+    // 4. THINNER, MEDIUM-GRAY RUMBLING ASH PLUME
+    public static class RumblingAshParticle extends TextureSheetParticle {
+        private static final double WIND_X = 0.09;
+        private static final double WIND_Z = 0.05;
+        private final float rotSpeed;
+
+        protected RumblingAshParticle(ClientLevel level, double x, double y, double z, double vx, double vy, double vz) {
+            super(level, x, y, z);
+            this.xd = vx * 0.5D;
+            this.yd = vy * 0.7D;
+            this.zd = vz * 0.5D;
+
+            this.lifetime = 400 + random.nextInt(150);
+            this.quadSize = 0.6F + random.nextFloat() * 0.4F;
+            this.hasPhysics = true;
+            this.rotSpeed = (random.nextFloat() - 0.5F) * 0.03F;
+            this.roll = random.nextFloat() * ((float)Math.PI * 2F);
+            this.oRoll = this.roll;
+
+            this.rCol = 0.38F + random.nextFloat() * 0.05F;
+            this.gCol = 0.36F + random.nextFloat() * 0.05F;
+            this.bCol = 0.36F + random.nextFloat() * 0.05F;
+        }
+
+        @Override
+        public ParticleRenderType getRenderType() { return ParticleRenderType.PARTICLE_SHEET_TRANSLUCENT; }
+
+        @Override
+        public void tick() {
+            this.xo = this.x; this.yo = this.y; this.zo = this.z;
+            this.oRoll = this.roll; this.roll += this.rotSpeed;
+            if (this.age++ >= this.lifetime) { this.remove(); return; }
+
+            float progress = (float) this.age / this.lifetime;
+            this.quadSize = (0.8F + progress * 8.0F);
+            this.alpha = 1.0F - (progress * progress);
+
+            this.move(this.xd, this.yd, this.zd);
+            this.yd *= 0.990D;
+            this.xd = (this.xd * 0.96F) + (WIND_X * 0.04);
+            this.zd = (this.zd * 0.96F) + (WIND_Z * 0.04);
+        }
+
+        public static class Provider implements ParticleProvider<SimpleParticleType> {
+            private final SpriteSet sprites;
+            public Provider(SpriteSet sprites) { this.sprites = sprites; }
+            @Override
+            public Particle createParticle(SimpleParticleType type, ClientLevel level, double x, double y, double z, double vx, double vy, double vz) {
+                RumblingAshParticle p = new RumblingAshParticle(level, x, y, z, vx, vy, vz);
+                p.pickSprite(sprites);
+                return p;
+            }
+        }
+    }
+
+    // 5. GENTLE, DISPERSING RECOVERY SOOT POOFS
+    public static class RecoveryAshParticle extends TextureSheetParticle {
+        private static final double WIND_X = 0.09;
+        private static final double WIND_Z = 0.05;
+
+        protected RecoveryAshParticle(ClientLevel level, double x, double y, double z, double vx, double vy, double vz) {
+            super(level, x, y, z);
+            this.xd = vx * 0.3D;
+            this.yd = vy * 0.4D;
+            this.zd = vz * 0.3D;
+
+            this.lifetime = 350 + random.nextInt(200);
+            this.quadSize = 0.5F + random.nextFloat() * 0.3F;
+            this.hasPhysics = true;
+            this.alpha = 0.65F;
+
+            this.rCol = 0.55F + random.nextFloat() * 0.05F;
+            this.gCol = 0.55F + random.nextFloat() * 0.05F;
+            this.bCol = 0.57F + random.nextFloat() * 0.04F;
+        }
+
+        @Override
+        public ParticleRenderType getRenderType() { return ParticleRenderType.PARTICLE_SHEET_TRANSLUCENT; }
+
+        @Override
+        public void tick() {
+            this.xo = this.x; this.yo = this.y; this.zo = this.z;
+            if (this.age++ >= this.lifetime) { this.remove(); return; }
+
+            float progress = (float) this.age / this.lifetime;
+            this.quadSize = (0.6F + progress * 4.5F);
+            this.alpha = 0.65F * (1.0F - progress);
+
+            this.move(this.xd, this.yd, this.zd);
+            this.yd *= 0.985D;
+            this.xd = (this.xd * 0.95F) + (WIND_X * 0.05);
+            this.zd = (this.zd * 0.95F) + (WIND_Z * 0.05);
+        }
+
+        public static class Provider implements ParticleProvider<SimpleParticleType> {
+            private final SpriteSet sprites;
+            public Provider(SpriteSet sprites) { this.sprites = sprites; }
+            @Override
+            public Particle createParticle(SimpleParticleType type, ClientLevel level, double x, double y, double z, double vx, double vy, double vz) {
+                RecoveryAshParticle p = new RecoveryAshParticle(level, x, y, z, vx, vy, vz);
+                p.pickSprite(sprites);
+                return p;
+            }
+        }
+    }
+
     // 2. GLOW-IN-THE-DARK FULL-BRIGHT LAVA FOUNTAIN SPARK
     public static class SparkParticle extends TextureSheetParticle {
         protected SparkParticle(ClientLevel level, double x, double y, double z, double vx, double vy, double vz) {
@@ -274,14 +254,11 @@ public class VolcanoParticles {
             this.zd = vz;
             this.quadSize = 0.30F + random.nextFloat() * 0.35F;
 
-            // FIXED: Extended lifetime limits so droplets don't clip out mid-air
             this.lifetime = 100 + random.nextInt(45);
-
-            // FIXED: Lowered gravity constant from 0.8F to 0.55F for a wider, long-distance cascade
             this.gravity = 0.55F;
 
             this.rCol = 1.0F;
-            this.gCol = 0.20F + random.nextFloat() * 0.25F; // Vibrant lava-orange blend
+            this.gCol = 0.20F + random.nextFloat() * 0.25F;
             this.bCol = 0.02F;
         }
 
@@ -292,7 +269,7 @@ public class VolcanoParticles {
 
         @Override
         public int getLightColor(float partialTick) {
-            return 240 | (240 << 16); // Full-bright illumination mapping
+            return 240 | (240 << 16);
         }
 
         @Override

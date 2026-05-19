@@ -1,0 +1,7 @@
+{
+  "parent": "minecraft:block/snow_height12",
+  "textures": {
+    "texture": "tephra:block/ash_layer",
+    "all": "tephra:block/ash_layer"
+  }
+}
