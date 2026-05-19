@@ -22,6 +22,7 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
     private int plumeHeight = 0;
     private float craterBaseRadius = 12.0f;
     private long lastRecordedGameTime = 0L;
+    private float eruptionIntensity = 1.0f;
 
     // Default to CINDER_CONE for backwards compatibility
     private VolcanoType volcanoType = VolcanoType.CINDER_CONE;
@@ -55,6 +56,8 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
     public float getCraterBaseRadius() { return this.craterBaseRadius; }
     public void setCraterBaseRadius(float radius) { this.craterBaseRadius = radius; }
     public void setClientShakeTimer(int ticks) { this.clientShakeTimer = ticks; }
+    public float getEruptionIntensity() { return this.eruptionIntensity; }
+    public void setEruptionIntensity(float intensity) { this.eruptionIntensity = intensity; }
 
     public static boolean isRumbleTick(Level level, BlockPos pos) {
         long combined = (long) pos.hashCode() ^ level.getGameTime();

@@ -252,9 +252,9 @@ public class VolcanoParticles {
             this.xd = vx;
             this.yd = vy;
             this.zd = vz;
-            this.quadSize = 0.30F + random.nextFloat() * 0.35F;
+            this.quadSize = 0.25F + random.nextFloat() * 0.35F;
 
-            this.lifetime = 100 + random.nextInt(45);
+            this.lifetime = 160 + random.nextInt(45);
             this.gravity = 0.55F;
 
             this.rCol = 1.0F;
