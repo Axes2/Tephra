@@ -148,7 +148,7 @@ public class TephraCommands {
         if (world.getBlockEntity(corePos) instanceof VolcanoCoreBlockEntity coreBe) {
             coreBe.setVolcanoType(VolcanoType.CINDER_CONE);
             coreBe.setPhaseTicks(0);
-            coreBe.setPlumeHeight(0);
+            coreBe.setPlumeHeight(1);
 
             // FIX: Generate a random base radius width between 9.0 and 21.0 blocks on creation
             float randomRadius = 9.0f + world.random.nextFloat() * 12.0f;

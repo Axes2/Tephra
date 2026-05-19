@@ -32,19 +32,26 @@ public class CinderConeProfile implements VolcanoProfile {
             BlockPos surfacePos = level.getHeightmapPos(Heightmap.Types.WORLD_SURFACE, pos);
             int depth = surfacePos.getY() - (pos.getY() + clientPlumeHeight);
 
+            // CinderConeProfile.java - tickClient (INCUBATING)
             if (depth > 0) {
-                double baseChance = 1.0 / (450.0 + (depth * 25.0));
-                if (level.random.nextDouble() < baseChance) {
-                    float intensityFactor = 1.0f - ((float) depth / 90.0f);
-                    float currentIntensity = 0.02f + (0.24f * Math.max(0.0f, intensityFactor));
+                // Generate a shared seed so all clients agree on when the rumble happens
+                long sharedSeed = level.getGameTime() ^ pos.hashCode();
+                java.util.Random syncedRand = new java.util.Random(sharedSeed);
 
-                    com.axes.tephra.TephraClient.volcanoShakeIntensity =
-                            Math.max(com.axes.tephra.TephraClient.volcanoShakeIntensity, currentIntensity);
+                double baseChance = 1.0 / (450.0 + (depth * 25.0));
+
+                // Only check the chance once per tick using the synced random
+                if (syncedRand.nextDouble() < baseChance) {
+                    float intensityFactor = 1.0f - ((float) depth / 90.0f);
+
+                    // 2 to 4 second rumble, synced across all clients
+                    blockEntity.setClientShakeTimer(40 + syncedRand.nextInt(41));
 
                     level.playLocalSound(surfacePos.getX(), surfacePos.getY(), surfacePos.getZ(),
                             com.axes.tephra.sound.TephraSounds.VOLCANO_RUMBLE.get(), SoundSource.BLOCKS,
-                            0.4f + (5.5f * intensityFactor), 0.4f + level.random.nextFloat() * 0.3f, false);
+                            0.4f + (5.5f * intensityFactor), 0.4f + syncedRand.nextFloat() * 0.3f, false);
                 }
+                // ... steam particles remain the same
 
                 if (depth <= 20) {
                     if (level.getGameTime() % 4 == 0) {
@@ -218,10 +225,14 @@ public class CinderConeProfile implements VolcanoProfile {
                     for (int zOffset = -cellRange; zOffset <= cellRange; zOffset++) {
                         double distance = Math.sqrt(xOffset * xOffset + zOffset * zOffset);
 
+                        // CinderConeProfile.java - around line 170
                         if (distance <= layerMaxRadius) {
                             BlockPos targetPos = new BlockPos(pos.getX() + xOffset, currentY, pos.getZ() + zOffset);
-                            BlockState currentBlockState = level.getBlockState(targetPos);
 
+                            // FIX: Protect the core block from being overwritten by its own conduit
+                            if (targetPos.equals(pos)) continue;
+
+                            BlockState currentBlockState = level.getBlockState(targetPos);
                             if (currentBlockState.is(Blocks.BEDROCK)) continue;
 
                             if (distance <= lavaRadius) {
@@ -240,24 +251,46 @@ public class CinderConeProfile implements VolcanoProfile {
                 blockEntity.setPlumeHeight(blockEntity.getPlumeHeight() + 1);
             }
 
-            // Topsoil Searing and Thermal Foliage Vaporization (Remains unchanged)
             int currentY = pos.getY() + blockEntity.getPlumeHeight();
             int depth = surfacePos.getY() - currentY;
-            if (depth <= 20 && depth > 0) {
-                for (int i = 0; i < 3; i++) {
-                    int rX = level.random.nextInt(5) - 2;
-                    int rZ = level.random.nextInt(5) - 2;
-                    BlockPos testPos = surfacePos.offset(rX, 0, rZ);
-                    BlockPos exactSurface = level.getHeightmapPos(Heightmap.Types.WORLD_SURFACE, testPos).below();
-                    BlockState surfaceBlock = level.getBlockState(exactSurface);
 
-                    if (surfaceBlock.is(Blocks.GRASS_BLOCK) || surfaceBlock.is(Blocks.DIRT)) {
-                        level.setBlockAndUpdate(exactSurface, Blocks.COARSE_DIRT.defaultBlockState());
-                    }
-                    BlockPos aboveSurface = exactSurface.above();
-                    BlockState grassFoliage = level.getBlockState(aboveSurface);
-                    if (grassFoliage.is(Blocks.SHORT_GRASS) || grassFoliage.is(Blocks.TALL_GRASS) || grassFoliage.is(Blocks.FERN)) {
-                        level.setBlockAndUpdate(aboveSurface, Blocks.AIR.defaultBlockState());
+            if (depth <= 20 && depth > 0) {
+                // Only attempt conversion every 5 ticks to create a slow, creeping rot
+                if (level.getGameTime() % 5 == 0) {
+                    double maxRadius = 14.0;
+                    // Radius widens smoothly as the lava breaches the surface
+                    double currentRadius = maxRadius * (1.0 - ((double) depth / 20.0));
+
+                    // 2 to 4 blocks converted per pulse
+                    int attempts = 2 + level.random.nextInt(3);
+
+                    for (int i = 0; i < attempts; i++) {
+                        // Circular spread math to enforce smooth, non-blocky terrain changes
+                        double r = Math.sqrt(level.random.nextDouble()) * currentRadius;
+                        double theta = level.random.nextDouble() * 2 * Math.PI;
+                        int rX = (int) (r * Math.cos(theta));
+                        int rZ = (int) (r * Math.sin(theta));
+
+                        BlockPos testPos = surfacePos.offset(rX, 0, rZ);
+                        BlockPos exactSurface = level.getHeightmapPos(Heightmap.Types.WORLD_SURFACE, testPos).below();
+                        BlockState surfaceBlock = level.getBlockState(exactSurface);
+
+                        if (surfaceBlock.is(Blocks.GRASS_BLOCK)) {
+                            BlockState rotState = level.random.nextFloat() < 0.6f ? Blocks.COARSE_DIRT.defaultBlockState() : Blocks.PODZOL.defaultBlockState();
+                            level.setBlockAndUpdate(exactSurface, rotState);
+                        } else if (surfaceBlock.is(Blocks.DIRT) || surfaceBlock.is(Blocks.COARSE_DIRT)) {
+                            if (level.random.nextFloat() < 0.15f) {
+                                BlockState deepRot = level.random.nextBoolean() ? Blocks.GRAVEL.defaultBlockState() : Blocks.TUFF.defaultBlockState();
+                                level.setBlockAndUpdate(exactSurface, deepRot);
+                            }
+                        }
+
+                        BlockPos aboveSurface = exactSurface.above();
+                        BlockState foliage = level.getBlockState(aboveSurface);
+                        if (foliage.is(Blocks.SHORT_GRASS) || foliage.is(Blocks.TALL_GRASS) || foliage.is(Blocks.FERN)) {
+                            BlockState deadFoliage = level.random.nextFloat() < 0.4f ? Blocks.DEAD_BUSH.defaultBlockState() : Blocks.AIR.defaultBlockState();
+                            level.setBlockAndUpdate(aboveSurface, deadFoliage);
+                        }
                     }
                 }
             }
@@ -269,7 +302,6 @@ public class CinderConeProfile implements VolcanoProfile {
                     SoundSource.BLOCKS, 13.0f, 0.65f + level.random.nextFloat() * 0.3f);
         }
 
-        // Strict Erupting Sand-Pile and Cauldron Logic
         if (phase == VolcanoPhase.ERUPTING) {
             if (level.getGameTime() % 45 == 0) {
                 level.playSound(null, pos, com.axes.tephra.sound.TephraSounds.VOLCANO_ERUPT.get(), SoundSource.BLOCKS, 16.0f, 0.45f + level.random.nextFloat() * 0.3f);
@@ -280,6 +312,7 @@ public class CinderConeProfile implements VolcanoProfile {
 
             double dynamicBaseRadius = blockEntity.getCraterBaseRadius();
             int sampleOffset = (int) (dynamicBaseRadius + 3);
+
             int nRim = level.getHeightmapPos(Heightmap.Types.WORLD_SURFACE, pos.north(sampleOffset)).getY();
             int sRim = level.getHeightmapPos(Heightmap.Types.WORLD_SURFACE, pos.south(sampleOffset)).getY();
             int eRim = level.getHeightmapPos(Heightmap.Types.WORLD_SURFACE, pos.east(sampleOffset)).getY();
@@ -302,11 +335,55 @@ public class CinderConeProfile implements VolcanoProfile {
                 int offsetZ = net.minecraft.util.Mth.floor(r * Math.sin(theta));
 
                 BlockPos targetXz = pos.offset(offsetX, 0, offsetZ);
-                BlockPos surfacePos = level.getHeightmapPos(Heightmap.Types.WORLD_SURFACE, targetXz);
+                BlockPos surfacePos = level.getHeightmapPos(Heightmap.Types.MOTION_BLOCKING, targetXz);
 
+                // --- SUPERCHARGED CANOPY PENETRATION BURNER ---
+                // Scan downwards from the sky surface down to the core level to catch hidden foliage layers
+                BlockPos scanPos = surfacePos;
+                while (scanPos.getY() > pos.getY() - 10) {
+                    BlockState scanState = level.getBlockState(scanPos);
+
+                    if (scanState.is(net.minecraft.tags.BlockTags.LEAVES) ||
+                            scanState.is(net.minecraft.tags.BlockTags.LOGS) ||
+                            scanState.is(net.minecraft.tags.BlockTags.FLOWERS) ||
+                            scanState.is(Blocks.SHORT_GRASS) || scanState.is(Blocks.TALL_GRASS) || scanState.is(Blocks.FERN)) {
+
+                        if (scanState.getBlock() instanceof net.minecraft.world.level.block.DoublePlantBlock) {
+                            var halfValue = scanState.getValue(net.minecraft.world.level.block.DoublePlantBlock.HALF);
+                            boolean isLower = halfValue.toString().equalsIgnoreCase("lower");
+                            BlockPos otherHalf = isLower ? scanPos.above() : scanPos.below();
+                            if (level.getBlockState(otherHalf).is(scanState.getBlock())) {
+                                level.setBlockAndUpdate(otherHalf, Blocks.AIR.defaultBlockState());
+                            }
+                        }
+
+                        // Spark a roaring fire at this canopy level
+                        level.setBlockAndUpdate(scanPos, Blocks.FIRE.defaultBlockState());
+
+                        // Volcanic Embers: Force-ignite 3 to 5 additional block targets surrounding this segment
+                        int fireSparks = 3 + level.random.nextInt(3);
+                        for (int k = 0; k < fireSparks; k++) {
+                            int sX = scanPos.getX() + level.random.nextInt(7) - 3;
+                            int sY = scanPos.getY() + level.random.nextInt(5) - 2;
+                            int sZ = scanPos.getZ() + level.random.nextInt(7) - 3;
+                            BlockPos sparkPos = new BlockPos(sX, sY, sZ);
+
+                            BlockState sparkTarget = level.getBlockState(sparkPos);
+                            if (sparkTarget.isAir() || sparkTarget.is(net.minecraft.tags.BlockTags.LEAVES) || sparkTarget.is(net.minecraft.tags.BlockTags.FLOWERS)) {
+                                if (Blocks.FIRE.defaultBlockState().canSurvive(level, sparkPos)) {
+                                    level.setBlockAndUpdate(sparkPos, Blocks.FIRE.defaultBlockState());
+                                }
+                            }
+                        }
+                    }
+                    scanPos = scanPos.below();
+                }
+
+                // Run normal downward tracing to find where the solid foundation ground begins
                 BlockPos checkPos = surfacePos;
                 while (checkPos.getY() > level.getMinBuildHeight() &&
-                        (level.getBlockState(checkPos).isAir() || level.getBlockState(checkPos).canBeReplaced() || level.getBlockState(checkPos).is(Blocks.LAVA))) {
+                        (level.getBlockState(checkPos).isAir() || level.getBlockState(checkPos).canBeReplaced() ||
+                                level.getBlockState(checkPos).is(Blocks.LAVA) || level.getBlockState(checkPos).is(Blocks.FIRE))) {
                     checkPos = checkPos.below();
                 }
 
@@ -314,19 +391,27 @@ public class CinderConeProfile implements VolcanoProfile {
                     if (fillingVent) {
                         BlockPos deployPos = checkPos.above();
                         BlockState deployState = level.getBlockState(deployPos);
+                        BlockState ventUnderState = level.getBlockState(checkPos);
+
+                        if (ventUnderState.is(TephraBlocks.ASH_LAYER.get()) || ventUnderState.is(TephraBlocks.MOLTEN_CINDER.get())) {
+                            continue;
+                        }
 
                         if (deployPos.getY() < level.getMaxBuildHeight() && deployPos.getY() <= targetLakeMaxY) {
-                            if (deployState.isAir() || deployState.canBeReplaced() || deployState.is(Blocks.LAVA)) {
-                                float lavaChance = 0.80f;
-                                if (phase == VolcanoPhase.RUMBLING) lavaChance = 0.50f;
-                                else if (phase == VolcanoPhase.ACTIVE || phase == VolcanoPhase.DORMANT) lavaChance = 0.15f;
+                            if (deployState.isAir() || deployState.canBeReplaced() || deployState.is(Blocks.LAVA) || deployState.is(Blocks.FIRE)) {
+                                if (!deployState.is(TephraBlocks.ASH_LAYER.get()) && !deployState.is(TephraBlocks.MOLTEN_CINDER.get())) {
+                                    float lavaChance = 0.80f;
+                                    if (phase == VolcanoPhase.RUMBLING) lavaChance = 0.50f;
+                                    else if (phase == VolcanoPhase.ACTIVE || phase == VolcanoPhase.DORMANT) lavaChance = 0.15f;
 
-                                BlockState fluidState = (level.random.nextFloat() < lavaChance) ?
-                                        Blocks.LAVA.defaultBlockState() : Blocks.MAGMA_BLOCK.defaultBlockState();
-                                level.setBlockAndUpdate(deployPos, fluidState);
+                                    BlockState fluidState = (level.random.nextFloat() < lavaChance) ?
+                                            Blocks.LAVA.defaultBlockState() : Blocks.MAGMA_BLOCK.defaultBlockState();
+                                    level.setBlockAndUpdate(deployPos, fluidState);
+                                }
                             }
                         }
                     } else {
+                        // Run standard cascading math downhill
                         int maxCascades = 4;
                         for (int cascade = 0; cascade < maxCascades; cascade++) {
                             BlockPos lowerNeighbor = null;
@@ -334,9 +419,9 @@ public class CinderConeProfile implements VolcanoProfile {
 
                             BlockPos[] neighbors = { checkPos.north(), checkPos.south(), checkPos.east(), checkPos.west() };
                             for (BlockPos nPos : neighbors) {
-                                BlockPos nSurface = level.getHeightmapPos(Heightmap.Types.WORLD_SURFACE, nPos);
+                                BlockPos nSurface = level.getHeightmapPos(Heightmap.Types.MOTION_BLOCKING, nPos);
                                 while (nSurface.getY() > level.getMinBuildHeight() &&
-                                        (level.getBlockState(nSurface).isAir() || level.getBlockState(nSurface).canBeReplaced())) {
+                                        (level.getBlockState(nSurface).isAir() || level.getBlockState(nSurface).canBeReplaced() || level.getBlockState(nSurface).is(Blocks.FIRE))) {
                                     nSurface = nSurface.below();
                                 }
 
@@ -354,6 +439,7 @@ public class CinderConeProfile implements VolcanoProfile {
                         BlockPos deployPos = checkPos.above();
                         BlockState deployState = level.getBlockState(deployPos);
 
+                        // Apply finalized ash accumulation on protected foundations
                         if (surfaceState.is(TephraBlocks.ASH_LAYER.get())) {
                             int currentLayers = surfaceState.getValue(AshLayerBlock.LAYERS);
 
@@ -362,13 +448,13 @@ public class CinderConeProfile implements VolcanoProfile {
                             } else {
                                 level.setBlockAndUpdate(checkPos, TephraBlocks.MOLTEN_CINDER.get().defaultBlockState());
 
-                                if (deployState.isAir() || deployState.canBeReplaced()) {
+                                if (deployState.isAir() || deployState.canBeReplaced() || deployState.is(Blocks.FIRE)) {
                                     level.setBlockAndUpdate(deployPos, TephraBlocks.ASH_LAYER.get().defaultBlockState().setValue(AshLayerBlock.LAYERS, 1));
                                 }
                             }
                         }
                         else if (TephraBlocks.ASH_LAYER.get().defaultBlockState().canSurvive(level, deployPos)) {
-                            if (deployState.isAir() || deployState.canBeReplaced()) {
+                            if (deployState.isAir() || deployState.canBeReplaced() || deployState.is(Blocks.FIRE)) {
                                 level.setBlockAndUpdate(deployPos, TephraBlocks.ASH_LAYER.get().defaultBlockState().setValue(AshLayerBlock.LAYERS, 1));
                             }
                         }

@@ -54,6 +54,7 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
     public void setPlumeHeight(int height) { this.plumeHeight = height; }
     public float getCraterBaseRadius() { return this.craterBaseRadius; }
     public void setCraterBaseRadius(float radius) { this.craterBaseRadius = radius; }
+    public void setClientShakeTimer(int ticks) { this.clientShakeTimer = ticks; }
 
     public static boolean isRumbleTick(Level level, BlockPos pos) {
         long combined = (long) pos.hashCode() ^ level.getGameTime();
@@ -106,31 +107,30 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
         if (level.isClientSide) {
             net.minecraft.client.Minecraft mc = net.minecraft.client.Minecraft.getInstance();
 
-            // Screen Shake Evaluation
-            if (currentPhase == VolcanoPhase.RUMBLING) {
-                if (isRumbleTick(level, pos)) {
-                    blockEntity.clientShakeTimer = 50;
-                }
+            // 1. Process universal timer decay and camera math
+            if (blockEntity.clientShakeTimer > 0) {
+                blockEntity.clientShakeTimer--;
 
-                if (blockEntity.clientShakeTimer > 0) {
-                    blockEntity.clientShakeTimer--;
+                if (mc.player != null && mc.player.blockPosition().closerThan(pos, 200)) {
+                    double distSq = mc.player.blockPosition().distToCenterSqr(pos.getX(), pos.getY(), pos.getZ());
+                    float proximityFactor = (float) (1.0 - (distSq / 40000f)); // 200^2
 
-                    if (mc.player != null && mc.player.blockPosition().closerThan(pos, 200)) {
-                        double distSq = mc.player.blockPosition().distToCenterSqr(pos.getX(), pos.getY(), pos.getZ());
-                        float maxDist = 200f * 200f;
-                        float proximityFactor = (float) (1.0 - (distSq / maxDist));
+                    if (proximityFactor > 0) {
+                        // Smooth fade-out over the duration of the timer
+                        float decayFactor = Math.min(1.0f, blockEntity.clientShakeTimer / 30.0f);
+                        float baseIntensity = 0.21f * decayFactor;
 
-                        if (proximityFactor > 0) {
-                            float decayFactor = blockEntity.clientShakeTimer / 50.0f;
-                            float baseIntensity = 0.12f * decayFactor;
-                            float currentIntensity = baseIntensity * proximityFactor;
-
-                            com.axes.tephra.TephraClient.volcanoShakeIntensity =
-                                    Math.max(com.axes.tephra.TephraClient.volcanoShakeIntensity, currentIntensity);
-                        }
+                        com.axes.tephra.TephraClient.volcanoShakeIntensity =
+                                Math.max(com.axes.tephra.TephraClient.volcanoShakeIntensity, baseIntensity * proximityFactor);
                     }
                 }
             }
+
+            // 2. Add fixed rumbling phase triggers back in
+            if (currentPhase == VolcanoPhase.RUMBLING && isRumbleTick(level, pos)) {
+                blockEntity.clientShakeTimer = 50;
+            }
+
             else if (currentPhase == VolcanoPhase.ERUPTING) {
                 if (mc.player != null && mc.player.blockPosition().closerThan(pos, 200)) {
                     double distSq = mc.player.blockPosition().distToCenterSqr(pos.getX(), pos.getY(), pos.getZ());
