@@ -54,6 +54,30 @@ public class FlowingLavaBlock extends Block {
         // Allows sky and block light to pass right through its custom voxel shapes seamlessly
         return true;
     }
+    @Override
+    protected boolean isRandomlyTicking(BlockState state) {
+        return true; // Tells the game engine to feed this block random chunk ticks
+    }
+
+    @Override
+    protected void randomTick(BlockState state, net.minecraft.server.level.ServerLevel level, BlockPos pos, net.minecraft.util.RandomSource random) {
+        // A 1-in-3 chance per tick creates a nice flow distance before the crust hardens
+        if (random.nextInt(3) == 0) {
+            int lavaLayers = state.getValue(LAYERS);
+
+            // If it maxed out its 16 layers, it becomes a massive, hot Molten Cinder block
+            if (lavaLayers >= 16) {
+                level.setBlockAndUpdate(pos, TephraBlocks.MOLTEN_CINDER.get().defaultBlockState());
+            } else {
+                // Otherwise, convert the 16 height states of lava to the 8 height states of basalt
+                int basaltLayers = Math.max(1, (int) Math.ceil(lavaLayers / 2.0));
+
+                // Keep the exact same flags to prevent lighting engine stutters
+                level.setBlock(pos, TephraBlocks.LAYERED_BASALT.get().defaultBlockState()
+                        .setValue(LayeredBasaltBlock.LAYERS, basaltLayers), 18);
+            }
+        }
+    }
 
     @Override
     protected BlockState updateShape(BlockState state, Direction direction, BlockState neighborState, LevelAccessor level, BlockPos pos, BlockPos neighborPos) {

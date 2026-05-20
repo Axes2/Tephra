@@ -28,21 +28,27 @@ public class TephraDataGenerator {
         PackOutput packOutput = generator.getPackOutput();
         CompletableFuture<HolderLookup.Provider> lookupProvider = event.getLookupProvider();
 
-        // 1. Build our registries
+        // This helper allows the client provider to validate textures
+        net.neoforged.neoforge.common.data.ExistingFileHelper existingFileHelper = event.getExistingFileHelper();
+
+        // 1. Build our worldgen registries
         RegistrySetBuilder builder = new RegistrySetBuilder()
-                // Re-add these two lines!
                 .add(Registries.CONFIGURED_FEATURE, TephraConfiguredFeatures::bootstrap)
                 .add(Registries.PLACED_FEATURE, TephraPlacedFeatures::bootstrap)
-                // Keep your existing lines:
                 .add(Registries.BIOME, TephraBiomes::bootstrap)
                 .add(Registries.STRUCTURE, TephraConfiguredStructures::bootstrap)
                 .add(Registries.STRUCTURE_SET, TephraStructureSets::bootstrap);
 
-        // 2. Add the Datapack provider to generate the JSONs
+        // 2. Add the Datapack provider to generate the server JSONs
         generator.addProvider(
                 event.includeServer(),
                 new DatapackBuiltinEntriesProvider(packOutput, lookupProvider, builder, Set.of(Tephra.MODID))
         );
-    }
 
+        // 3. ADD THE BLOCKSTATE PROVIDER to generate the client Model JSONs
+        generator.addProvider(
+                event.includeClient(),
+                new TephraBlockStateProvider(packOutput, existingFileHelper)
+        );
+    }
 }

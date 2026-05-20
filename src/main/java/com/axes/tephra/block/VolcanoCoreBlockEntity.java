@@ -13,6 +13,10 @@ import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
+import java.util.LinkedList;
+import java.util.Queue;
+import java.util.Iterator;
+import com.axes.tephra.block.profile.LavaPacket;
 
 public class VolcanoCoreBlockEntity extends BlockEntity {
 
@@ -23,6 +27,8 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
     private float craterBaseRadius = 12.0f;
     private long lastRecordedGameTime = 0L;
     private float eruptionIntensity = 1.0f;
+
+    public final Queue<LavaPacket> activeFlows = new LinkedList<>();
 
     // Default to CINDER_CONE for backwards compatibility
     private VolcanoType volcanoType = VolcanoType.CINDER_CONE;
@@ -252,6 +258,7 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
                     blockEntity.targetDormantTicks = 3600 + level.random.nextInt(4800);
                 }
             }
+
         }
     }
 

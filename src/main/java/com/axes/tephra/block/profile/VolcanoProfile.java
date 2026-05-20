@@ -13,4 +13,9 @@ public interface VolcanoProfile {
     default int getPhaseDurationTicks(VolcanoPhase phase, net.minecraft.util.RandomSource random, int defaultTarget) {
         return defaultTarget; // By default, fallback to the hardcoded entity variables
     }
+    // Add this right below your existing tickServer and tickClient methods
+    default void tickFluidPhysics(Level level, BlockPos pos, VolcanoCoreBlockEntity blockEntity) {
+        // We leave this empty by default!
+        // This ensures your CinderConeProfile doesn't crash, as it doesn't need fluid physics.
+    }
 }

@@ -3,8 +3,13 @@ package com.axes.tephra;
 import com.axes.tephra.block.TephraBlockEntities;
 import com.axes.tephra.block.TephraBlocks;
 import com.axes.tephra.config.TephraConfig;
+import com.axes.tephra.datagen.TephraBlockStateProvider;
 import com.axes.tephra.worldgen.TephraFeatures;
 import com.axes.tephra.worldgen.structure.TephraStructures;
+import net.minecraft.core.HolderLookup;
+import net.minecraft.data.DataGenerator;
+import net.minecraft.data.PackOutput;
+import net.neoforged.neoforge.data.event.GatherDataEvent;
 import org.slf4j.Logger;
 import com.mojang.logging.LogUtils;
 
@@ -18,6 +23,8 @@ import net.neoforged.fml.ModContainer;
 import net.neoforged.fml.event.lifecycle.FMLCommonSetupEvent;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.server.ServerStartingEvent;
+
+import java.util.concurrent.CompletableFuture;
 
 @Mod(Tephra.MODID)
 public class Tephra {
@@ -46,14 +53,11 @@ public class Tephra {
 
     private void commonSetup(FMLCommonSetupEvent event) {
         LOGGER.info("Tephra common setup initialized.");
-
-        if (Config.LOG_DIRT_BLOCK.getAsBoolean()) {
-            LOGGER.info("DIRT BLOCK >> {}", BuiltInRegistries.BLOCK.getKey(Blocks.DIRT));
-        }
     }
 
     @SubscribeEvent
     public void onServerStarting(ServerStartingEvent event) {
         LOGGER.info("Tephra server starting.");
     }
+
 }

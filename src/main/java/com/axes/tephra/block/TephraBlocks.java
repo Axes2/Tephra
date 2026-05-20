@@ -59,6 +59,7 @@ public class TephraBlocks {
                     .instabreak()
                     .pushReaction(PushReaction.DESTROY)
                     .noOcclusion() // Prevents the game from culling adjacent faces of standard blocks
+                    .randomTicks()
             ));
 
     public static final DeferredHolder<Block, Block> LAYERED_BASALT = registerBlock("layered_basalt",
