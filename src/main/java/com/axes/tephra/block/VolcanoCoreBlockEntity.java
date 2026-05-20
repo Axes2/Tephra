@@ -285,6 +285,20 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
         }
     }
 
+    // 1. Tells the server to bundle up the NBT data for the client
+    @Override
+    public net.minecraft.nbt.CompoundTag getUpdateTag(net.minecraft.core.HolderLookup.Provider registries) {
+        net.minecraft.nbt.CompoundTag tag = new net.minecraft.nbt.CompoundTag();
+        saveAdditional(tag, registries);
+        return tag;
+    }
+
+    // 2. Actually sends the packet across the network to the client
+    @Override
+    public net.minecraft.network.protocol.game.ClientboundBlockEntityDataPacket getUpdatePacket() {
+        return net.minecraft.network.protocol.game.ClientboundBlockEntityDataPacket.create(this);
+    }
+
     @Override
     protected void saveAdditional(CompoundTag tag, HolderLookup.Provider registries) {
         super.saveAdditional(tag, registries);

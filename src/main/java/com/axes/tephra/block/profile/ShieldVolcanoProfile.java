@@ -32,13 +32,26 @@ public class ShieldVolcanoProfile implements VolcanoProfile {
     public void tickClient(Level level, BlockPos pos, BlockState state, VolcanoPhase phase, VolcanoCoreBlockEntity blockEntity) {
         if (phase == VolcanoPhase.ERUPTING) {
             BlockPos ventPos = pos.above(blockEntity.getPlumeHeight());
-            for (int i = 0; i < 25; i++) {
-                double d0 = ventPos.getX() + level.random.nextDouble();
-                double d1 = ventPos.getY() + 0.5D;
-                double d2 = ventPos.getZ() + level.random.nextDouble();
-                double velocityX = (level.random.nextDouble() - 0.5D) * 0.4D;
-                double velocityY = 0.15D + (level.random.nextDouble() * 0.2D);
-                double velocityZ = (level.random.nextDouble() - 0.5D) * 0.4D;
+
+            // INCREASED DENSITY: 50 sparks per tick instead of 25
+            for (int i = 0; i < 50; i++) {
+                // TIGHTER RADIUS: Spawn in a small 1.5 block circular pool (no wild scattering)
+                double radius = level.random.nextDouble() * 3;
+                double angle = level.random.nextDouble() * 2 * Math.PI;
+                double offsetX = Math.cos(angle) * radius;
+                double offsetZ = Math.sin(angle) * radius;
+
+                double d0 = ventPos.getX() + 0.5D + offsetX;
+                double d1 = ventPos.getY() + 0.5D; // Keep it low to the surface
+                double d2 = ventPos.getZ() + 0.5D + offsetZ;
+
+                // LOWER VELOCITY: Simulates heavy, bubbling lava rather than an explosive fountain
+                double velocityX = (level.random.nextDouble() - 0.5D) * 0.1D;
+                // Low vertical splash (0.05 to 0.25)
+                double velocityY = 0.5D + (level.random.nextDouble() * 0.3D);
+                double velocityZ = (level.random.nextDouble() - 0.5D) * 0.1D;
+
+                // ONLY Lava Sparks, completely omitting the Volcano Ash particles!
                 level.addParticle(TephraParticleTypes.LAVA_SPARK.get(), d0, d1, d2, velocityX, velocityY, velocityZ);
             }
         }
@@ -46,14 +59,45 @@ public class ShieldVolcanoProfile implements VolcanoProfile {
 
     @Override
     public void tickServer(Level level, BlockPos pos, BlockState state, VolcanoPhase phase, VolcanoCoreBlockEntity blockEntity) {
+
+        // --- AUDIO: Rumbling Phase ---
+        if (phase == VolcanoPhase.RUMBLING && VolcanoCoreBlockEntity.isRumbleTick(level, pos)) {
+            level.playSound(null, pos, com.axes.tephra.sound.TephraSounds.VOLCANO_RUMBLE.get(),
+                    net.minecraft.sounds.SoundSource.BLOCKS, 13.0f, 0.65f + level.random.nextFloat() * 0.3f);
+        }
+
+        // --- AUDIO: Erupting Phase ---
         if (phase == VolcanoPhase.ERUPTING) {
-            // SPATIAL PACING: Inject every 20 ticks
+            float intensity = blockEntity.getEruptionIntensity();
+            if (intensity <= 0) intensity = 1.0f; // Safety fallback
+
+            // Deep eruption booming
+            if (level.getGameTime() % Math.max(15, (int)(45 / intensity)) == 0) {
+                level.playSound(null, pos, com.axes.tephra.sound.TephraSounds.VOLCANO_ERUPT.get(),
+                        net.minecraft.sounds.SoundSource.BLOCKS, 12.0f * intensity, 0.45f + level.random.nextFloat() * 0.3f);
+            }
+            // Sizzling / splashing lava sounds
+            if (level.getGameTime() % 12 == 0) {
+                level.playSound(null, pos, net.minecraft.sounds.SoundEvents.LAVA_EXTINGUISH,
+                        net.minecraft.sounds.SoundSource.BLOCKS, 1.5f, 0.4f + level.random.nextFloat() * 0.4f);
+            }
+
+            // --- LAVA INJECTION (RADIAL VENT) ---
             if (level.getGameTime() % 20 == 0) {
                 BlockPos ventPos = pos.above(blockEntity.getPlumeHeight());
-                Direction randomDir = Direction.Plane.HORIZONTAL.getRandomDirection(level.random);
 
-                // MASSIVE SURGE: 5x the volume! (960 layers = 60 full blocks of volume)
-                blockEntity.activeFlows.add(new LavaPacket(findSurfaceBelow(level, ventPos), 960, randomDir));
+                // Simulate a 9x9 bubbling lava lake
+                int offsetX = (level.random.nextInt(9) - 4);
+                int offsetZ = (level.random.nextInt(9) - 4);
+
+                // Keep the spawn points inside a rough circle
+                if (offsetX * offsetX + offsetZ * offsetZ <= 16) {
+                    BlockPos spawnPos = ventPos.offset(offsetX, 0, offsetZ);
+                    Direction randomDir = Direction.Plane.HORIZONTAL.getRandomDirection(level.random);
+
+                    // Inject massive surge payload
+                    blockEntity.activeFlows.add(new LavaPacket(findSurfaceBelow(level, spawnPos), 960, randomDir));
+                }
             }
         }
 
