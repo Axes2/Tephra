@@ -3,6 +3,7 @@ package com.axes.tephra.block;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.world.level.BlockGetter;
+import net.minecraft.world.level.Level;
 import net.minecraft.world.level.LevelAccessor;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
@@ -59,22 +60,54 @@ public class FlowingLavaBlock extends Block {
         return true; // Tells the game engine to feed this block random chunk ticks
     }
 
+    // Helper method to check if an air block is touching something flammable
+    private boolean hasFlammableNeighbours(Level level, BlockPos pos) {
+        for (Direction direction : Direction.values()) {
+            BlockState state = level.getBlockState(pos.relative(direction));
+            // Checks NeoForge's flammability hooks
+            if (state.isFlammable(level, pos.relative(direction), direction.getOpposite())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     @Override
     protected void randomTick(BlockState state, net.minecraft.server.level.ServerLevel level, BlockPos pos, net.minecraft.util.RandomSource random) {
-        // A 1-in-3 chance per tick creates a nice flow distance before the crust hardens
+        // --- 1. YOUR EXISTING CRUST HARDENING LOGIC ---
         if (random.nextInt(3) == 0) {
             int lavaLayers = state.getValue(LAYERS);
-
-            // If it maxed out its 16 layers, it becomes a massive, hot Molten Cinder block
             if (lavaLayers >= 16) {
                 level.setBlockAndUpdate(pos, TephraBlocks.MOLTEN_CINDER.get().defaultBlockState());
             } else {
-                // Otherwise, convert the 16 height states of lava to the 8 height states of basalt
                 int basaltLayers = Math.max(1, (int) Math.ceil(lavaLayers / 2.0));
-
-                // Keep the exact same flags to prevent lighting engine stutters
                 level.setBlock(pos, TephraBlocks.LAYERED_BASALT.get().defaultBlockState()
                         .setValue(LayeredBasaltBlock.LAYERS, basaltLayers), 18);
+            }
+        }
+
+        // --- 2. NEW FIRE SPREAD LOGIC ---
+        // Ensure the game rule for fire spread is active
+        if (level.getGameRules().getBoolean(net.minecraft.world.level.GameRules.RULE_DOFIRETICK)) {
+            int fireAttempts = random.nextInt(3);
+            if (fireAttempts > 0) {
+                BlockPos targetPos = pos;
+                for (int j = 0; j < fireAttempts; ++j) {
+                    // Randomly drift upwards and outwards
+                    targetPos = targetPos.offset(random.nextInt(3) - 1, 1, random.nextInt(3) - 1);
+                    if (!level.isLoaded(targetPos)) return;
+
+                    BlockState targetState = level.getBlockState(targetPos);
+                    if (targetState.isAir()) {
+                        // If we found an air pocket touching wood/leaves, ignite it!
+                        if (hasFlammableNeighbours(level, targetPos)) {
+                            level.setBlockAndUpdate(targetPos, Blocks.FIRE.defaultBlockState());
+                            return;
+                        }
+                    } else if (targetState.blocksMotion()) {
+                        return; // Stop searching upwards if blocked by a solid ceiling
+                    }
+                }
             }
         }
     }
@@ -86,5 +119,16 @@ public class FlowingLavaBlock extends Block {
             return Blocks.STONE.defaultBlockState();
         }
         return super.updateShape(state, direction, neighborState, level, pos, neighborPos);
+    }
+    @Override
+    protected void entityInside(BlockState state, Level level, BlockPos pos, net.minecraft.world.entity.Entity entity) {
+        if (!entity.fireImmune()) {
+            // Set the entity on fire for 15 seconds
+            entity.igniteForSeconds(15);
+
+            // Deal standard lava damage (4.0F = 2 hearts per tick)
+            entity.hurt(level.damageSources().lava(), 4.0F);
+        }
+        super.entityInside(state, level, pos, entity);
     }
 }

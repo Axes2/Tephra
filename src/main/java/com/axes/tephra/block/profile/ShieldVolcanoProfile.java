@@ -47,16 +47,17 @@ public class ShieldVolcanoProfile implements VolcanoProfile {
     @Override
     public void tickServer(Level level, BlockPos pos, BlockState state, VolcanoPhase phase, VolcanoCoreBlockEntity blockEntity) {
         if (phase == VolcanoPhase.ERUPTING) {
-            // SPATIAL PACING: Only inject a new massive packet every 20 ticks (1 second)
-            // This prevents packets from piling up on top of each other at the vent.
+            // SPATIAL PACING: Inject every 20 ticks
             if (level.getGameTime() % 20 == 0) {
                 BlockPos ventPos = pos.above(blockEntity.getPlumeHeight());
                 Direction randomDir = Direction.Plane.HORIZONTAL.getRandomDirection(level.random);
 
-                // Inject 12 blocks worth of volume (192 layers) into the pipeline
-                blockEntity.activeFlows.add(new LavaPacket(findSurfaceBelow(level, ventPos), 192, randomDir));
+                // MASSIVE SURGE: 5x the volume! (960 layers = 60 full blocks of volume)
+                blockEntity.activeFlows.add(new LavaPacket(findSurfaceBelow(level, ventPos), 960, randomDir));
             }
         }
+
+        tickFluidPhysics(level, pos, blockEntity);
     }
 
     // --- EFFUSIVE VIRTUAL LAVA AGENT ALGORITHM ---
@@ -134,14 +135,30 @@ public class ShieldVolcanoProfile implements VolcanoProfile {
 
         while (iterator.hasNext()) {
             LavaPacket packet = iterator.next();
+
+            // --- SAFETY CHECK ---
+            // If the packet wanders into an unloaded chunk, freeze it or kill it.
+            if (!level.isLoaded(packet.currentPos)) {
+                iterator.remove();
+                continue;
+            }
+
             packet.lifeTimeTicks++;
 
-            // Safety kill-switch (400 ticks = ~40 seconds of travel life) or empty volume
-            if (packet.volumeLayers <= 0 || packet.lifeTimeTicks > 400) {
+            // --- TERMINAL KILL-SWITCH ---
+            // MASSIVELY EXTENDED LIFE: 3600 ticks (3 minutes of real-world travel time)
+            if (packet.volumeLayers <= 0 || packet.lifeTimeTicks > 3600) {
                 if (packet.volumeLayers > 0) {
-                    depositVolumetricLava(level, packet.currentPos, packet.volumeLayers); // Dump remainder
+                    // CAP: Max 3 layers deposited upon death to prevent 30-block high Molten Cinder towers
+                    depositVolumetricLava(level, packet.currentPos, Math.min(packet.volumeLayers, 3));
                 }
                 iterator.remove();
+                continue;
+            }
+
+            // --- SPEED REDUCTION PACING ---
+            // Process the physics step only 1 out of every 6 ticks (~83% slower)
+            if (packet.lifeTimeTicks % 6 != 0) {
                 continue;
             }
 
@@ -167,7 +184,7 @@ public class ShieldVolcanoProfile implements VolcanoProfile {
 
             // 2. The Physics Step
             if (minHeight > currentHeight) {
-                // TRAPPED: Fill the caldera to the lowest notch
+                // TRAPPED: Fill the caldera/depression to the lowest notch
                 int layersNeededToFill = (int) Math.ceil((minHeight - currentHeight) * 16.0);
                 int layersToDeposit = Math.min(packet.volumeLayers, layersNeededToFill);
 
@@ -192,25 +209,26 @@ public class ShieldVolcanoProfile implements VolcanoProfile {
                     }
                 } else {
                     // Packet died from friction on flat ground.
-                    depositVolumetricLava(level, packet.currentPos, packet.volumeLayers);
+                    // CAP: Max 3 layers deposited to prevent flat-ground towers
+                    depositVolumetricLava(level, packet.currentPos, Math.min(packet.volumeLayers, 3));
                     iterator.remove();
                 }
 
             } else {
                 // DOWNHILL: Rush downward, leaving a continuous trail
+                packet.currentPos = depositVolumetricLava(level, packet.currentPos, 1);
+                packet.volumeLayers -= 1;
 
-                // THE CLIFF FIX: If the drop is more than 1 block, don't teleport!
-                // Just fall 1 block straight down this tick to create a glowing waterfall.
-                if (currentHeight - minHeight > 1.5) {
-                    packet.currentPos = depositVolumetricLava(level, packet.currentPos, 1);
+                // ANTI-SPAGHETTI FIX: Lateral Spreading
+                // Randomly drop a layer to a secondary adjacent block as it slides
+                if (packet.volumeLayers > 5 && level.random.nextFloat() < 0.40f) {
+                    BlockPos sideNeighbor = lowestNeighbors.get(level.random.nextInt(lowestNeighbors.size()));
+                    depositVolumetricLava(level, sideNeighbor, 1);
                     packet.volumeLayers -= 1;
-                    packet.currentPos = packet.currentPos.below();
-                } else {
-                    // Standard slope sliding
-                    packet.currentPos = depositVolumetricLava(level, packet.currentPos, 1);
-                    packet.volumeLayers -= 1;
-                    packet.currentPos = lowestNeighbors.get(level.random.nextInt(lowestNeighbors.size()));
                 }
+
+                // Let the packet naturally snap to the lowest neighbor (fixes previous cliff air-gaps)
+                packet.currentPos = lowestNeighbors.get(level.random.nextInt(lowestNeighbors.size()));
             }
         }
     }
@@ -227,7 +245,8 @@ public class ShieldVolcanoProfile implements VolcanoProfile {
             }
             search = search.below();
         }
-        return pos;
+        // If it falls straight through the world, deposit at the very bottom
+        return new BlockPos(pos.getX(), level.getMinBuildHeight(), pos.getZ());
     }
 
     private double getExactSurfaceHeight(Level level, BlockPos pos) {
@@ -241,6 +260,7 @@ public class ShieldVolcanoProfile implements VolcanoProfile {
     }
 
     // A Recursive Volume Applicator that cleanly handles overflow and re-melting
+    // A Recursive Volume Applicator that cleanly handles overflow and re-melting
     private BlockPos depositVolumetricLava(Level level, BlockPos pos, int layersToAdd) {
         if (layersToAdd <= 0) return pos;
 
@@ -248,29 +268,33 @@ public class ShieldVolcanoProfile implements VolcanoProfile {
         int flags = 18;
         int currentLavaLayers = 0;
 
-        // Determine current fluid volume
         if (state.is(TephraBlocks.FLOWING_LAVA.get())) {
             currentLavaLayers = state.getValue(FlowingLavaBlock.LAYERS);
-        }
-        // Re-melt mechanic: Reheat the cooled basalt to combine its volume smoothly
-        else if (state.is(TephraBlocks.LAYERED_BASALT.get())) {
+        } else if (state.is(TephraBlocks.LAYERED_BASALT.get())) {
             currentLavaLayers = state.getValue(LayeredBasaltBlock.LAYERS) * 2;
-        }
-        // Solid ground check
-        else {
-            pos = pos.above();
-            state = level.getBlockState(pos);
-            if (!state.canBeReplaced() && !state.isAir()) return pos; // Blocked!
+        } else {
+            // FIX 2 & 3: Air Gaps and Flowers
+            // Only step UP if the current block is completely solid
+            if (!state.canBeReplaced() && !state.isAir()) {
+                pos = pos.above();
+                state = level.getBlockState(pos);
+                if (!state.canBeReplaced() && !state.isAir()) return pos; // Blocked!
+            }
+
+            // Destroy the flower/grass before placing lava to prevent invisible collision issues
+            if (state.canBeReplaced() && !state.isAir()) {
+                level.destroyBlock(pos, true);
+            }
         }
 
         int newTotalLayers = currentLavaLayers + layersToAdd;
 
         if (newTotalLayers <= 16) {
-            // Fits cleanly inside the current block space
             level.setBlock(pos, TephraBlocks.FLOWING_LAVA.get().defaultBlockState().setValue(FlowingLavaBlock.LAYERS, newTotalLayers), flags);
             return pos;
         } else {
-            // Volume exceeded block height! Solidify the bottom and recursively overflow upward
+            // FIX 4 Context: This is where Molten Cinder is generated!
+            // If you want pure Basalt, swap TephraBlocks.MOLTEN_CINDER for your full Basalt block here.
             level.setBlock(pos, TephraBlocks.MOLTEN_CINDER.get().defaultBlockState(), flags);
             int overflowLayers = newTotalLayers - 16;
 
