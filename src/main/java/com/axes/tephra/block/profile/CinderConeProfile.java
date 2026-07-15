@@ -13,11 +13,13 @@ import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.core.Direction;
-import net.minecraft.util.RandomSource;
-import com.axes.tephra.block.FlowingLavaBlock;
-import com.axes.tephra.block.TephraBlocks;
 
 public class CinderConeProfile implements VolcanoProfile {
+
+    /** How often (in ticks) the eruption may open a new effusive breakout on the flank. */
+    private static final int BREAKOUT_INTERVAL = 160;
+    /** Maximum number of simultaneously active breakout vents. */
+    private static final int MAX_BREAKOUTS = 4;
 
     @Override
     public void tickClient(Level level, BlockPos pos, BlockState state, VolcanoPhase phase, VolcanoCoreBlockEntity blockEntity) {
@@ -348,12 +350,12 @@ public class CinderConeProfile implements VolcanoProfile {
                 level.playSound(null, pos, SoundEvents.LAVA_EXTINGUISH, SoundSource.BLOCKS, 1.5f, 0.4f + level.random.nextFloat() * 0.4f);
             }
 
-            BlockPos ventPos = pos.above(Math.max(1, blockEntity.getPlumeHeight() - 2));
-
-            // Release 15 virtual lava agents every single server tick
-            // (15 agents * 20 ticks = 300 units of lava volume generated per second)
-            for (int i = 0; i < 15; i++) {
-                simulateLavaAgent(level, ventPos, level.random);
+            // LAVA BREAKOUTS: occasionally an effusive vent opens on the flank and sends a
+            // tongue of real molten basalt downhill. The fluid spreads, solidifies, and is
+            // quenched by the core once the eruption ends.
+            if (level.getGameTime() % BREAKOUT_INTERVAL == 0 && level.random.nextFloat() < 0.5f
+                    && blockEntity.getVentSourceCount() < MAX_BREAKOUTS) {
+                spawnFlankBreakout(level, pos, blockEntity);
             }
 
             double baseRadiusSetting = blockEntity.getCraterBaseRadius();
@@ -526,104 +528,39 @@ public class CinderConeProfile implements VolcanoProfile {
             }
         }
     }
-    private void simulateLavaAgent(Level level, BlockPos start, RandomSource random) {
-        BlockPos current = start;
-        int maxSteps = 150; // Cap travel distance to prevent runaways
+    /**
+     * Opens a short-lived effusive vent partway down the cone and lets the molten basalt
+     * fluid run downhill from there. The source is tracked on the core block entity, which
+     * quenches it into molten cinder as soon as the eruption phase ends.
+     */
+    private void spawnFlankBreakout(Level level, BlockPos corePos, VolcanoCoreBlockEntity blockEntity) {
+        double angle = level.random.nextDouble() * 2 * Math.PI;
+        double distance = blockEntity.getCraterBaseRadius() * (0.5 + level.random.nextDouble() * 0.6);
+        BlockPos column = corePos.offset(
+                (int) Math.round(Math.cos(angle) * distance), 0,
+                (int) Math.round(Math.sin(angle) * distance));
 
-        for (int step = 0; step < maxSteps; step++) {
-            // 1. Ground the agent to the actual topological surface
-            current = findSurfaceBelow(level, current);
+        BlockPos surface = level.getHeightmapPos(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, column);
+        if (!level.isLoaded(surface)) return;
 
-            BlockPos bestMove = current;
-            double lowestHeight = getExactSurfaceHeight(level, current);
-
-            // 2. Evaluate all 4 adjacent blocks (Gradient Descent)
-            Direction[] dirs = new Direction[]{Direction.NORTH, Direction.SOUTH, Direction.EAST, Direction.WEST};
-
-            // Shuffle directions so lava doesn't artificially favor North/West on flat surfaces
-            for (int i = dirs.length - 1; i > 0; i--) {
-                int index = random.nextInt(i + 1);
-                Direction temp = dirs[index];
-                dirs[index] = dirs[i];
-                dirs[i] = temp;
-            }
-
-            for (Direction dir : dirs) {
-                BlockPos neighbor = findSurfaceBelow(level, current.relative(dir));
-                double neighborHeight = getExactSurfaceHeight(level, neighbor);
-
-                if (neighborHeight < lowestHeight) {
-                    lowestHeight = neighborHeight;
-                    bestMove = neighbor;
-                }
-                // Viscosity simulation: 30% chance to spread sideways on perfectly flat terrain
-                else if (neighborHeight == lowestHeight && random.nextFloat() < 0.30f) {
-                    lowestHeight = neighborHeight;
-                    bestMove = neighbor;
+        // Let the breakout slide a little way down the flank before it opens, so lava
+        // emerges from the slope instead of the crater rim.
+        for (int step = 0; step < 16; step++) {
+            BlockPos lowest = null;
+            for (Direction dir : Direction.Plane.HORIZONTAL) {
+                BlockPos candidate = level.getHeightmapPos(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, surface.relative(dir));
+                if (candidate.getY() < surface.getY() && (lowest == null || candidate.getY() < lowest.getY())) {
+                    lowest = candidate;
                 }
             }
-
-            // 3. Move or Pool
-            if (bestMove.equals(current)) {
-                // Hit a local minimum (crater basin or natural trench). Deposit lava here and terminate.
-                depositLava(level, current);
-                break;
-            } else {
-                current = bestMove;
-                // Friction deposit: 5% chance to leave a layer behind while flowing down a steep slope
-                if (random.nextFloat() < 0.05f) {
-                    depositLava(level, current);
-                }
-            }
+            if (lowest == null) break;
+            surface = lowest;
         }
-    }
 
-    private BlockPos findSurfaceBelow(Level level, BlockPos pos) {
-        BlockPos search = pos.above(2); // Start slightly higher in case lava stacked rapidly
-        while (search.getY() > level.getMinBuildHeight()) {
-            BlockState state = level.getBlockState(search);
-            // Treat solid blocks and our custom lava as the true terrain surface
-            if (state.is(TephraBlocks.FLOWING_LAVA.get()) || state.isSolidRender(level, search)) {
-                return search;
-            }
-            search = search.below();
-        }
-        return pos;
-    }
-
-    private double getExactSurfaceHeight(Level level, BlockPos pos) {
-        BlockState state = level.getBlockState(pos);
-        if (state.is(TephraBlocks.FLOWING_LAVA.get())) {
-            // Return fractional height (e.g., Y + 0.25 for 4 layers)
-            return pos.getY() + (state.getValue(FlowingLavaBlock.LAYERS) / 16.0);
-        }
-        // Solid blocks are considered a full 1.0 block tall
-        return pos.getY() + 1.0;
-    }
-
-    private void depositLava(Level level, BlockPos pos) {
-        BlockState state = level.getBlockState(pos);
-
-        // 18 = Block.UPDATE_CLIENTS (2) | Block.UPDATE_KNOWN_SHAPE (16). Bypasses neighbor update lag.
-        int flags = 18;
-
-        if (state.is(TephraBlocks.FLOWING_LAVA.get())) {
-            int layers = state.getValue(FlowingLavaBlock.LAYERS);
-            if (layers < 16) {
-                level.setBlock(pos, state.setValue(FlowingLavaBlock.LAYERS, layers + 1), flags);
-            } else {
-                // Maximum height reached! Harden the core into the next molten stage
-                level.setBlock(pos, TephraBlocks.MOLTEN_CINDER.get().defaultBlockState(), flags);
-            }
-        } else {
-            // It's a solid block. Place a fresh 1-layer lava block directly on top.
-            BlockPos above = pos.above();
-            BlockState aboveState = level.getBlockState(above);
-
-            // Only place if we aren't destroying something important
-            if (aboveState.canBeReplaced() || aboveState.isAir()) {
-                level.setBlock(above, TephraBlocks.FLOWING_LAVA.get().defaultBlockState().setValue(FlowingLavaBlock.LAYERS, 1), flags);
-            }
+        BlockState target = level.getBlockState(surface);
+        if (target.isAir() || target.canBeReplaced()) {
+            level.setBlockAndUpdate(surface, TephraBlocks.MOLTEN_BASALT_BLOCK.get().defaultBlockState());
+            blockEntity.trackVentSource(surface);
         }
     }
 }
