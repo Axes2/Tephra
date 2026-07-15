@@ -14,7 +14,18 @@ public class TephraConfig {
         public final ModConfigSpec.DoubleValue lavaFlowBranchChance;
         public final ModConfigSpec.IntValue lavaFlowCoolingDelay;
 
+        public final ModConfigSpec.BooleanValue screenShake;
+
         public Common(ModConfigSpec.Builder builder) {
+            builder.push("Client");
+
+            screenShake = builder
+                    .comment("Whether nearby volcanoes shake the camera (rumbling and eruptions).",
+                            "Set to false to disable the screen shake entirely. Default: true")
+                    .define("screenShake", true);
+
+            builder.pop();
+
             builder.push("ShieldVolcano");
 
             shieldEruptionDuration = builder
@@ -35,8 +46,8 @@ public class TephraConfig {
 
             lavaFlowAdvanceInterval = builder
                     .comment("Ticks between each step of the lava flow front while erupting. Lower =",
-                            "faster, more energetic flows that reach further per second. Default: 4")
-                    .defineInRange("lavaFlowAdvanceInterval", 4, 1, 200);
+                            "faster, more energetic flows that reach further per second. Default: 8")
+                    .defineInRange("lavaFlowAdvanceInterval", 8, 1, 200);
 
             lavaFlowMaxHeads = builder
                     .comment("Maximum simultaneous flow fronts ('heads') a single volcano may drive.",
@@ -51,9 +62,9 @@ public class TephraConfig {
 
             lavaFlowCoolingDelay = builder
                     .comment("How stubbornly molten lava resists crusting into rock (higher = it stays",
-                            "liquid longer before solidifying in place). Governs how long flows glow",
-                            "before cooling to permanent basalt. Default: 3")
-                    .defineInRange("lavaFlowCoolingDelay", 3, 1, 40);
+                            "liquid longer before solidifying in place). Cooling always starts at the",
+                            "exposed edges of a flow and spares actively-flowing lava. Default: 2")
+                    .defineInRange("lavaFlowCoolingDelay", 2, 1, 40);
 
             builder.pop();
         }

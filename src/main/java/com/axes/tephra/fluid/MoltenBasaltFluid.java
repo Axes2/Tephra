@@ -67,28 +67,25 @@ public abstract class MoltenBasaltFluid extends BaseFlowingFluid {
             return;
         }
 
-        // Higher config delay = lava clings to its liquid state longer before crusting.
-        int delay = TephraConfig.COMMON.lavaFlowCoolingDelay.get();
+        // Lava that is actively fed — receiving flow from above or from a fuller neighbour —
+        // is a live channel, so it never freezes mid-stream. Everything the crust forms on is
+        // lava that has come to rest.
         int amount = state.getAmount();
-
-        if (state.isSource()) {
-            // A retired flow head or pooled body: crusts steadily into permanent rock.
-            if (random.nextInt(delay + 1) == 0) {
-                freeze(level, pos, state, amount);
-            }
+        if (isFed(level, pos, amount)) {
             return;
         }
 
-        if (isFed(level, pos, amount)) {
-            // Fed flowing cell: deep channel cells resist, thin margins crust readily.
-            if (random.nextInt(delay + amount * amount * 2) == 0) {
+        // Crust from the exposed edges inward: the more open air a cell touches sideways, the
+        // sooner it chills. Cells buried inside the flow (no open side) hold heat far longer,
+        // so a skin forms along the margins first and the deep interior sets last.
+        int delay = TephraConfig.COMMON.lavaFlowCoolingDelay.get();
+        int openSides = openHorizontalSides(level, pos);
+        if (openSides == 0) {
+            if (random.nextInt(delay * 6) == 0) {
                 freeze(level, pos, state, amount);
             }
-        } else {
-            // Cut off from any feed: cools quickly where it came to rest.
-            if (random.nextInt(delay) == 0) {
-                freeze(level, pos, state, amount);
-            }
+        } else if (random.nextInt(delay) < openSides) {
+            freeze(level, pos, state, amount);
         }
     }
 
@@ -104,6 +101,18 @@ public abstract class MoltenBasaltFluid extends BaseFlowingFluid {
             }
         }
         return false;
+    }
+
+    /** How many of the four horizontal neighbours are open air — a cell's exposure to cooling. */
+    private int openHorizontalSides(Level level, BlockPos pos) {
+        int open = 0;
+        for (Direction direction : Direction.Plane.HORIZONTAL) {
+            BlockState neighbor = level.getBlockState(pos.relative(direction));
+            if (neighbor.getFluidState().isEmpty() && (neighbor.isAir() || neighbor.canBeReplaced())) {
+                open++;
+            }
+        }
+        return open;
     }
 
     private void freeze(Level level, BlockPos pos, FluidState state, int amount) {

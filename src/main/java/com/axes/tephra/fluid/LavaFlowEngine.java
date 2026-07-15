@@ -94,7 +94,16 @@ public final class LavaFlowEngine {
             }
             Targets targets = bestTargets(level, head);
             if (targets.primary() == null) {
-                be.removeFlowHead(head); // dead end: let it cool where it pooled
+                // No downhill or flat opening: the head sits in a basin. Raise the pool one
+                // level so it can fill and eventually spill over the lowest rim; if it can't
+                // rise (open ground or an overhang), retire it to cool where it pooled.
+                BlockPos up = riseTarget(level, head);
+                be.removeFlowHead(head);
+                if (up != null) {
+                    placeSource(level, up);
+                    be.addFlowHead(up);
+                    protect(level, up, until);
+                }
                 continue;
             }
 
@@ -171,21 +180,38 @@ public final class LavaFlowEngine {
 
     /**
      * The cell a parcel of lava entering column ({@code x},{@code z}) at {@code startY} comes
-     * to rest in: it falls through open cells and settles on the first solid support. Returns
+     * to rest in: it falls through open air until it settles on the first support — solid rock
+     * <b>or existing liquid</b>. Resting on liquid is what lets pools stack up and eventually
+     * overflow their rim, instead of the flow sinking back through its own lava. Returns
      * {@code null} if the column drops away into the void within {@link #MAX_FALL}.
      */
     private static BlockPos landing(Level level, int x, int z, int startY) {
         BlockPos.MutableBlockPos probe = new BlockPos.MutableBlockPos(x, startY, z);
         int floor = Math.max(level.getMinBuildHeight() + 1, startY - MAX_FALL);
         while (probe.getY() > floor) {
-            if (!passable(level, probe)) {
-                // Solid support at this Y; lava rests one above, if that cell is open.
+            if (!openAir(level, probe)) {
+                // Support at this Y (solid or liquid); lava rests one above, if that is open.
                 BlockPos rest = new BlockPos(x, probe.getY() + 1, z);
                 return passable(level, rest) ? rest : null;
             }
             probe.move(Direction.DOWN);
         }
         return null;
+    }
+
+    /**
+     * The cell directly above a pooled head, if the pool can still rise. We only reach here
+     * when the head has no downhill or flat opening — every side is a wall or more lava — so
+     * it is genuinely enclosed in a basin; raising it stacks the pool toward its rim. On open
+     * ground a head always has a flat opening and never gets here, so this never towers.
+     * Returns null under an overhang or at the build ceiling.
+     */
+    private static BlockPos riseTarget(Level level, BlockPos head) {
+        BlockPos up = head.above();
+        if (up.getY() >= level.getMaxBuildHeight() || !passable(level, up)) {
+            return null;
+        }
+        return up;
     }
 
     /** Places a molten basalt source, letting the vanilla engine spread/render it locally. */
@@ -202,6 +228,15 @@ public final class LavaFlowEngine {
             return false;
         }
         return s.isAir() || s.canBeReplaced();
+    }
+
+    /** Air (or an open, replaceable, non-fluid cell) — the space a falling parcel drops through. */
+    private static boolean openAir(Level level, BlockPos pos) {
+        BlockState s = level.getBlockState(pos);
+        if (s.is(Blocks.BEDROCK) || s.is(TephraBlocks.VOLCANO_CORE.get())) {
+            return false;
+        }
+        return (s.isAir() || s.canBeReplaced()) && s.getFluidState().isEmpty();
     }
 
     private static boolean isMoltenBasalt(Level level, BlockPos pos) {

@@ -95,7 +95,7 @@ public class TephraClient {
 
         @SubscribeEvent
         public static void onComputeCameraAngles(ViewportEvent.ComputeCameraAngles event) {
-            if (volcanoShakeIntensity > 0.0f) {
+            if (volcanoShakeIntensity > 0.0f && com.axes.tephra.config.TephraConfig.COMMON.screenShake.get()) {
                 long gameTime = Minecraft.getInstance().level != null ? Minecraft.getInstance().level.getGameTime() : 0;
 
                 // Wrapped the addition in parentheses to cast the final double sum back down to a float
