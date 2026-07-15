@@ -2,6 +2,7 @@ package com.axes.tephra.block;
 
 import com.axes.tephra.block.profile.CinderConeProfile;
 import com.axes.tephra.block.profile.VolcanoProfile;
+import com.axes.tephra.config.TephraConfig;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.HolderLookup;
 import net.minecraft.nbt.CompoundTag;
@@ -196,6 +197,24 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
         if (currentPhase != VolcanoPhase.ERUPTING && !blockEntity.ventSources.isEmpty()
                 && level.getGameTime() % 20 == 0) {
             blockEntity.quenchVentSources(level);
+        }
+
+        // VOLUMETRIC LAVA FLOW: while erupting, every active vent crawls fresh lava far
+        // downhill, pooling into low ground and paving long cinder flows that build the
+        // edifice. This is what carries lava well beyond the vanilla fluid's ~7-block reach.
+        if (currentPhase == VolcanoPhase.ERUPTING && !blockEntity.ventSources.isEmpty()
+                && level.getGameTime() % TephraConfig.COMMON.lavaFlowPulseInterval.get() == 0) {
+            int reach = TephraConfig.COMMON.lavaFlowReach.get();
+            int agents = TephraConfig.COMMON.lavaFlowAgentsPerPulse.get();
+            double crust = TephraConfig.COMMON.lavaFlowCrustChance.get();
+            // Shields sheet out into broad flat aprons; cinder cones channel narrow tongues.
+            double lateral = blockEntity.volcanoType == VolcanoType.SHIELD
+                    ? TephraConfig.COMMON.shieldLateralSpread.get()
+                    : TephraConfig.COMMON.shieldLateralSpread.get() * 0.45;
+            for (BlockPos vent : blockEntity.ventSources.toArray(new BlockPos[0])) {
+                com.axes.tephra.fluid.LavaFlowSimulation.pulse(
+                        level, vent, level.random, reach, agents, lateral, crust);
+            }
         }
 
         // STOCHASTIC OPERATIONAL DIAGNOSTICS TELEMETRY HUD
