@@ -2,7 +2,6 @@ package com.axes.tephra.block;
 
 import com.axes.tephra.block.profile.CinderConeProfile;
 import com.axes.tephra.block.profile.VolcanoProfile;
-import com.axes.tephra.config.TephraConfig;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.HolderLookup;
 import net.minecraft.nbt.CompoundTag;
@@ -31,6 +30,10 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
     // Every molten basalt source block this volcano has opened (vent pond, flank breakouts).
     // Persisted so an eruption interrupted by a save/reload can still be quenched.
     private final Set<BlockPos> ventSources = new HashSet<>();
+
+    // The leading edges of the active lava flows, marched downhill by the LavaFlowEngine.
+    // Persisted so an eruption interrupted by a save/reload keeps flowing where it left off.
+    private final Set<BlockPos> flowHeads = new HashSet<>();
 
     // Default to CINDER_CONE for backwards compatibility
     private VolcanoType volcanoType = VolcanoType.CINDER_CONE;
@@ -83,6 +86,25 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
 
     public int getVentSourceCount() {
         return this.ventSources.size();
+    }
+
+    /** Live vent sources (summit pond, flank breakouts) this volcano is feeding. */
+    public Set<BlockPos> getVentSources() {
+        return this.ventSources;
+    }
+
+    // --- Lava flow heads: the marching leading edges driven by LavaFlowEngine ---
+
+    public Set<BlockPos> getFlowHeads() {
+        return this.flowHeads;
+    }
+
+    public void addFlowHead(BlockPos pos) {
+        this.flowHeads.add(pos.immutable());
+    }
+
+    public void removeFlowHead(BlockPos pos) {
+        this.flowHeads.remove(pos);
     }
 
     /**
@@ -199,22 +221,15 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
             blockEntity.quenchVentSources(level);
         }
 
-        // VOLUMETRIC LAVA FLOW: while erupting, every active vent crawls fresh lava far
-        // downhill, pooling into low ground and paving long cinder flows that build the
-        // edifice. This is what carries lava well beyond the vanilla fluid's ~7-block reach.
-        if (currentPhase == VolcanoPhase.ERUPTING && !blockEntity.ventSources.isEmpty()
-                && level.getGameTime() % TephraConfig.COMMON.lavaFlowPulseInterval.get() == 0) {
-            int reach = TephraConfig.COMMON.lavaFlowReach.get();
-            int agents = TephraConfig.COMMON.lavaFlowAgentsPerPulse.get();
-            double crust = TephraConfig.COMMON.lavaFlowCrustChance.get();
-            // Shields sheet out into broad flat aprons; cinder cones channel narrow tongues.
-            double lateral = blockEntity.volcanoType == VolcanoType.SHIELD
-                    ? TephraConfig.COMMON.shieldLateralSpread.get()
-                    : TephraConfig.COMMON.shieldLateralSpread.get() * 0.45;
-            for (BlockPos vent : blockEntity.ventSources.toArray(new BlockPos[0])) {
-                com.axes.tephra.fluid.LavaFlowSimulation.pulse(
-                        level, vent, level.random, reach, agents, lateral, crust);
-            }
+        // VOLUMETRIC LAVA FLOW: while erupting, the flow engine marches liquid lava fronts
+        // far downhill from every vent, pooling and branching, and leaving cooling flows
+        // that build the edifice. This carries lava well beyond the vanilla ~7-block reach.
+        if (currentPhase == VolcanoPhase.ERUPTING) {
+            com.axes.tephra.fluid.LavaFlowEngine.tick(level, pos, blockEntity);
+        } else if (!blockEntity.flowHeads.isEmpty()) {
+            // Eruption over: stop protecting the fronts so they finish cooling into rock.
+            blockEntity.flowHeads.clear();
+            blockEntity.setChanged();
         }
 
         // STOCHASTIC OPERATIONAL DIAGNOSTICS TELEMETRY HUD
@@ -355,6 +370,7 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
         tag.putString("VolcanoType", this.volcanoType.getSerializedName());
         tag.putLong("LastRecordedGameTime", level != null ? level.getGameTime() : this.lastRecordedGameTime);
         tag.putLongArray("VentSources", this.ventSources.stream().mapToLong(BlockPos::asLong).toArray());
+        tag.putLongArray("FlowHeads", this.flowHeads.stream().mapToLong(BlockPos::asLong).toArray());
     }
 
     @Override
@@ -372,6 +388,10 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
         this.ventSources.clear();
         for (long packedPos : tag.getLongArray("VentSources")) {
             this.ventSources.add(BlockPos.of(packedPos));
+        }
+        this.flowHeads.clear();
+        for (long packedPos : tag.getLongArray("FlowHeads")) {
+            this.flowHeads.add(BlockPos.of(packedPos));
         }
         if (tag.contains("VolcanoType")) {
             String typeName = tag.getString("VolcanoType");

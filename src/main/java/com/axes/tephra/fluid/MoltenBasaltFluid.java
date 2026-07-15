@@ -2,20 +2,19 @@ package com.axes.tephra.fluid;
 
 import com.axes.tephra.block.LayeredBasaltBlock;
 import com.axes.tephra.block.TephraBlocks;
+import com.axes.tephra.config.TephraConfig;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.core.particles.ParticleOptions;
 import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
-import net.minecraft.tags.BlockTags;
 import net.minecraft.util.Mth;
 import net.minecraft.util.RandomSource;
 import net.minecraft.world.level.GameRules;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.LevelReader;
 import net.minecraft.world.level.block.BaseFireBlock;
-import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.StateDefinition;
 import net.minecraft.world.level.material.Fluid;
@@ -24,29 +23,26 @@ import net.neoforged.neoforge.fluids.BaseFlowingFluid;
 import org.jetbrains.annotations.Nullable;
 
 /**
- * The moving, liquid half of the volcano system. The vanilla fluid engine drives all
- * spreading; this class adds vanilla-lava fire spread and the solidification rules
- * that turn sustained flows into permanent volcanic rock:
+ * The liquid half of the volcano system. Long-range transport is handled by
+ * {@link LavaFlowEngine}, which marches source blocks downhill; the vanilla fluid engine
+ * only renders and fills the smooth segments between them. This class supplies vanilla-lava
+ * fire spread and the <b>delayed cooling</b> rule that eventually turns settled flows into
+ * permanent volcanic rock.
  *
+ * <p>Cooling is deliberately slow and gated so lava stays visibly molten while it flows:
  * <ul>
- *   <li><b>Fed flows pave their bed</b> — terrain under an active flow slowly converts to
- *       molten cinder, and pooled lava solidifies from the bottom up, raising the flow bed.</li>
- *   <li><b>Fed flows crust over</b> — occasionally a flowing cell freezes into layered basalt
- *       matching its fluid level (both are measured in eighths, so the surface height is
- *       preserved). Thin distal margins freeze fastest, building natural levees; deep channel
- *       cells rarely freeze, so active channels stay open.</li>
- *   <li><b>Cut-off flows drain away</b> — when the vent stops feeding a flow the fluid engine
- *       recedes it naturally, leaving only the accreted rock behind.</li>
+ *   <li><b>Vents and active fronts never crust.</b> Any cell the engine is currently
+ *       protecting ({@link LavaFlowEngine#isProtected}) is skipped entirely, so the vent
+ *       can never clog and the working front stays liquid.</li>
+ *   <li><b>Margins crust first, channels last.</b> Thin, unfed cells at the edges of a flow
+ *       solidify soonest (building natural levees and toes); deep, actively fed lava resists,
+ *       so channels keep glowing while they carry lava.</li>
+ *   <li><b>Everything freezes in place.</b> Deposits are glowing molten cinder that ages into
+ *       solid rock, so each flow permanently thickens the edifice. When the eruption ends and
+ *       protection lapses, the whole flow steadily finishes cooling — the flow "dying down".</li>
  * </ul>
  */
 public abstract class MoltenBasaltFluid extends BaseFlowingFluid {
-
-    /** 1-in-N chance per random tick for an orphaned source block to crust over. */
-    private static final int ORPHAN_SOURCE_CRUST_CHANCE = 40;
-    /** 1-in-N chance per random tick for a fed flow to pave the block beneath it. */
-    private static final int BED_PAVE_CHANCE = 6;
-    /** 1-in-N chance per random tick for a cut-off flow to freeze before it drains. */
-    private static final int UNFED_FREEZE_CHANCE = 3;
 
     protected MoltenBasaltFluid(Properties properties) {
         super(properties);
@@ -60,33 +56,39 @@ public abstract class MoltenBasaltFluid extends BaseFlowingFluid {
     @Override
     public void randomTick(Level level, BlockPos pos, FluidState state, RandomSource random) {
         trySpreadFire(level, pos, random);
-        solidify(level, pos, state, random);
+        cool(level, pos, state, random);
     }
 
-    // --- SOLIDIFICATION: how the volcano turns flows into rock ---
+    // --- COOLING: how settled lava becomes permanent volcanic rock ---
 
-    private void solidify(Level level, BlockPos pos, FluidState state, RandomSource random) {
+    private void cool(Level level, BlockPos pos, FluidState state, RandomSource random) {
+        // The engine keeps vents and the marching fronts molten; leave those alone.
+        if (LavaFlowEngine.isProtected(level, pos)) {
+            return;
+        }
+
+        // Higher config delay = lava clings to its liquid state longer before crusting.
+        int delay = TephraConfig.COMMON.lavaFlowCoolingDelay.get();
+        int amount = state.getAmount();
+
         if (state.isSource()) {
-            // Vent ponds are maintained by the volcano core, which also quenches them when the
-            // eruption ends. This is only a fallback so a stray source can't pump forever.
-            if (random.nextInt(ORPHAN_SOURCE_CRUST_CHANCE) == 0) {
-                level.setBlockAndUpdate(pos, TephraBlocks.MOLTEN_CINDER.get().defaultBlockState());
-                level.levelEvent(1501, pos, 0);
+            // A retired flow head or pooled body: crusts steadily into permanent rock.
+            if (random.nextInt(delay + 1) == 0) {
+                freeze(level, pos, state, amount);
             }
             return;
         }
 
-        int amount = state.getAmount();
         if (isFed(level, pos, amount)) {
-            if (random.nextInt(BED_PAVE_CHANCE) == 0) {
-                paveBed(level, pos);
-            }
-            // Deep cells (near the vent or in channels) freeze rarely; shallow margins readily.
-            if (random.nextInt(2 + amount * amount * 2) == 0) {
+            // Fed flowing cell: deep channel cells resist, thin margins crust readily.
+            if (random.nextInt(delay + amount * amount * 2) == 0) {
                 freeze(level, pos, state, amount);
             }
-        } else if (random.nextInt(UNFED_FREEZE_CHANCE) == 0) {
-            freeze(level, pos, state, amount);
+        } else {
+            // Cut off from any feed: cools quickly where it came to rest.
+            if (random.nextInt(delay) == 0) {
+                freeze(level, pos, state, amount);
+            }
         }
     }
 
@@ -104,40 +106,17 @@ public abstract class MoltenBasaltFluid extends BaseFlowingFluid {
         return false;
     }
 
-    /**
-     * Sustained flows aggrade their own bed: soft terrain below becomes molten cinder, and
-     * pooled lava solidifies bottom-up. This is what makes the shield grow without any
-     * global bookkeeping.
-     */
-    private void paveBed(Level level, BlockPos pos) {
-        BlockPos below = pos.below();
-        BlockState belowState = level.getBlockState(below);
-        FluidState belowFluid = belowState.getFluidState();
-
-        if (belowFluid.getType().isSame(this)) {
-            // Only solidify pooled lava that is resting on something — never a mid-air cascade
-            // cell, and never a vent source.
-            if (!belowFluid.isSource() && level.getBlockState(below.below()).blocksMotion()) {
-                level.setBlockAndUpdate(below, TephraBlocks.MOLTEN_CINDER.get().defaultBlockState());
-            }
-        } else if (isMeltableTerrain(belowState)) {
-            level.setBlockAndUpdate(below, TephraBlocks.MOLTEN_CINDER.get().defaultBlockState());
-        }
-    }
-
-    private boolean isMeltableTerrain(BlockState state) {
-        return state.is(BlockTags.DIRT)
-                || state.is(BlockTags.SAND)
-                || state.is(Blocks.GRAVEL)
-                || state.is(BlockTags.BASE_STONE_OVERWORLD);
-    }
-
     private void freeze(Level level, BlockPos pos, FluidState state, int amount) {
-        // Fluid levels and basalt layers are both eighths of a block, so freezing in place
-        // preserves the surface height. A frozen cascade cell leaves a full hanging curtain.
-        int layers = state.getValue(FALLING) ? 8 : Mth.clamp(amount, 1, 8);
-        level.setBlockAndUpdate(pos, TephraBlocks.LAYERED_BASALT.get().defaultBlockState()
-                .setValue(LayeredBasaltBlock.LAYERS, layers));
+        // Deep/pooled cells build up as full molten cinder (glows, ages to solid rock, grows
+        // the edifice); thin flowing margins leave a ragged layered-basalt skin at flow height.
+        BlockState result;
+        if (state.isSource() || state.getValue(FALLING) || amount >= 5) {
+            result = TephraBlocks.MOLTEN_CINDER.get().defaultBlockState();
+        } else {
+            result = TephraBlocks.LAYERED_BASALT.get().defaultBlockState()
+                    .setValue(LayeredBasaltBlock.LAYERS, Mth.clamp(amount, 1, 8));
+        }
+        level.setBlockAndUpdate(pos, result);
         level.levelEvent(1501, pos, 0); // lava-extinguish fizz + smoke
     }
 

@@ -9,10 +9,10 @@ public class TephraConfig {
         public final ModConfigSpec.IntValue shieldDormantDuration;
         public final ModConfigSpec.DoubleValue shieldLateralSpread;
 
-        public final ModConfigSpec.IntValue lavaFlowReach;
-        public final ModConfigSpec.IntValue lavaFlowAgentsPerPulse;
-        public final ModConfigSpec.IntValue lavaFlowPulseInterval;
-        public final ModConfigSpec.DoubleValue lavaFlowCrustChance;
+        public final ModConfigSpec.IntValue lavaFlowAdvanceInterval;
+        public final ModConfigSpec.IntValue lavaFlowMaxHeads;
+        public final ModConfigSpec.DoubleValue lavaFlowBranchChance;
+        public final ModConfigSpec.IntValue lavaFlowCoolingDelay;
 
         public Common(ModConfigSpec.Builder builder) {
             builder.push("ShieldVolcano");
@@ -33,27 +33,27 @@ public class TephraConfig {
 
             builder.push("LavaFlow");
 
-            lavaFlowReach = builder
-                    .comment("Maximum blocks a single lava agent may travel downhill in one pulse.",
-                            "This is the flow-length budget, so raising it lets flows reach much",
-                            "further from the vent. Default: 110")
-                    .defineInRange("lavaFlowReach", 110, 8, 512);
+            lavaFlowAdvanceInterval = builder
+                    .comment("Ticks between each step of the lava flow front while erupting. Lower =",
+                            "faster, more energetic flows that reach further per second. Default: 4")
+                    .defineInRange("lavaFlowAdvanceInterval", 4, 1, 200);
 
-            lavaFlowAgentsPerPulse = builder
-                    .comment("How many lava agents each active vent releases per pulse. Higher = broader,",
-                            "faster-building flow fields (and slightly more block updates). Default: 3")
-                    .defineInRange("lavaFlowAgentsPerPulse", 3, 1, 32);
+            lavaFlowMaxHeads = builder
+                    .comment("Maximum simultaneous flow fronts ('heads') a single volcano may drive.",
+                            "This is the main bound on how broad and expansive flows get, and on",
+                            "server cost near an erupting volcano. Higher = larger flow fields. Default: 6")
+                    .defineInRange("lavaFlowMaxHeads", 6, 1, 32);
 
-            lavaFlowPulseInterval = builder
-                    .comment("Ticks between lava flow pulses while a volcano is erupting. Lower = flows",
-                            "extend faster and more continuously. Default: 8")
-                    .defineInRange("lavaFlowPulseInterval", 8, 1, 200);
+            lavaFlowBranchChance = builder
+                    .comment("Chance (0.0 to 1.0) that a flow front splits into a second lobe when it",
+                            "advances, letting flows fan into multiple channels. Default: 0.25")
+                    .defineInRange("lavaFlowBranchChance", 0.25, 0.0, 1.0);
 
-            lavaFlowCrustChance = builder
-                    .comment("Chance (0.0 to 1.0) that each cell a flow passes through crusts into",
-                            "cinder behind the advancing front. Higher = thicker channels/levees and",
-                            "shorter reach; lower = longer, thinner flows. Default: 0.35")
-                    .defineInRange("lavaFlowCrustChance", 0.35, 0.0, 1.0);
+            lavaFlowCoolingDelay = builder
+                    .comment("How stubbornly molten lava resists crusting into rock (higher = it stays",
+                            "liquid longer before solidifying in place). Governs how long flows glow",
+                            "before cooling to permanent basalt. Default: 3")
+                    .defineInRange("lavaFlowCoolingDelay", 3, 1, 40);
 
             builder.pop();
         }

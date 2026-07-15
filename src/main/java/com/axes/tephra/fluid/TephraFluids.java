@@ -87,13 +87,16 @@ public class TephraFluids {
             FLUIDS.register("flowing_molten_basalt", () -> new MoltenBasaltFluid.Flowing(fluidProperties()));
 
     private static BaseFlowingFluid.Properties fluidProperties() {
-        // Slower and further-reaching than vanilla overworld lava (slope 2 / drop-off 2 /
-        // tick 30): drop-off 1 lets a single vent pond feed broad, thin, effusive sheets.
+        // The LavaFlowEngine drives long-range transport by marching source blocks; the
+        // vanilla engine only has to render and fill the smooth segments between them. A
+        // fast tick rate (nether-lava speed) keeps that local spread and recede lively so
+        // the flow front reads as energetic, moving liquid. Drop-off 1 gives a wide molten
+        // channel around each marched source.
         return new BaseFlowingFluid.Properties(MOLTEN_BASALT_TYPE, MOLTEN_BASALT, FLOWING_MOLTEN_BASALT)
                 .block(TephraBlocks.MOLTEN_BASALT_BLOCK)
                 .slopeFindDistance(3)
                 .levelDecreasePerBlock(1)
-                .tickRate(30)
+                .tickRate(10)
                 .explosionResistance(100.0F);
     }
 
