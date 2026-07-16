@@ -18,8 +18,9 @@ public class CinderConeProfile implements VolcanoProfile {
 
     /** How often (in ticks) the eruption may open a new effusive breakout on the flank. */
     private static final int BREAKOUT_INTERVAL = 160;
-    /** Maximum number of simultaneously active breakout vents. */
-    private static final int MAX_BREAKOUTS = 4;
+    /** Maximum number of simultaneously active breakout vents. Kept low so each eruption reads
+     *  as a few distinct tongues of lava rather than a flood on every flank at once. */
+    private static final int MAX_BREAKOUTS = 2;
 
     @Override
     public void tickClient(Level level, BlockPos pos, BlockState state, VolcanoPhase phase, VolcanoCoreBlockEntity blockEntity) {

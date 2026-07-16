@@ -49,9 +49,9 @@ public class TephraConfig {
             builder.push("LavaFlow");
 
             lavaFlowAdvanceInterval = builder
-                    .comment("Ticks between each step of the lava flow front while erupting. Lower =",
-                            "faster, more energetic flows that reach further per second. Default: 8")
-                    .defineInRange("lavaFlowAdvanceInterval", 8, 1, 200);
+                    .comment("Ticks between each simulation step of the lava flow while erupting. Higher =",
+                            "slower, calmer flows that advance fewer blocks per second. Default: 16")
+                    .defineInRange("lavaFlowAdvanceInterval", 16, 1, 200);
 
             lavaFlowMaxHeads = builder
                     .comment("Maximum simultaneous flow fronts ('heads') a single volcano may drive.",
@@ -76,9 +76,9 @@ public class TephraConfig {
                     .comment("Vent over-pressure: how many extra units above a full block each vent holds",
                             "and feeds into the flow per sim step (8 units = one full block). The vent is",
                             "capped at this over-pressure, so it can never accumulate into a tower — excess",
-                            "the flow can't carry away is simply not emitted. Higher = more voluminous,",
-                            "faster-spreading flows. Default: 4")
-                    .defineInRange("lavaFlowEruptionRate", 4, 1, 512);
+                            "the flow can't carry away is simply not emitted. Keep this low for slender,",
+                            "individual flows; raise it for broad, fast-spreading floods. Default: 2")
+                    .defineInRange("lavaFlowEruptionRate", 2, 1, 512);
 
             lavaFlowViscosity = builder
                     .comment("Maximum units of lava a single cell sheds sideways per simulation step",

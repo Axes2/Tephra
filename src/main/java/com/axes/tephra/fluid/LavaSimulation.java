@@ -297,38 +297,47 @@ public final class LavaSimulation {
                 }
                 continue;
             }
-            int diff = surface - nSurf[k];
-            // Need a genuine head (>= 2 units) to move, so near-level lava can't creep a thin
-            // sheet across flats. FLOOR(diff/2) moves toward level without overshoot (ceil would
-            // leave the neighbour higher and the two would oscillate); the viscosity cap keeps a
-            // visible channel behind the front instead of a cell fully draining in one step.
-            if (diff < 2) {
+            int nLvl = levels.get(nPos[k]);
+            int capacity = FULL - nLvl;
+            if (capacity <= 0) {
                 continue;
             }
-            int nLvl = levels.get(nPos[k]);
-            int t = Math.min(Math.min(amount, diff / 2), Math.min(viscosity, FULL - nLvl));
+            int diff = surface - nSurf[k];
+            // Two parts move: a gentle, viscosity-capped amount that gives the flow a visible
+            // channel (a real head of >= 2 units, so near-level lava can't creep a thin sheet
+            // across flats; FLOOR(diff/2) moves toward level without the overshoot that would
+            // oscillate); PLUS the unphysical EXCESS above a full block, shed with no cap so it
+            // resolves downhill in this pass rather than overflowing upward and flashing a face
+            // at a step-down.
+            int gentle = diff >= 2 ? Math.min(diff / 2, viscosity) : 0;
+            int excess = Math.max(0, amount - FULL);
+            int t = Math.min(Math.min(amount, capacity), excess + gentle);
             if (t > 0) {
                 addLevel(level, nPos[k], t, maxCells);
                 amount -= t;
                 moved = true;
             }
         }
-        // 3. UPWARD OVERFLOW — only when a cell is genuinely over-full and could shed nothing
-        // sideways or down. This is the sole way lava rises: a basin layer that is completely
-        // saturated pushes its excess up to start the next layer.
-        if (amount > FULL) {
+        // 3. UPWARD OVERFLOW — the sole way lava rises. Only when the cell is genuinely confined:
+        // every neighbour is a wall or sits at/above a full block here (a real basin/hole layer
+        // that is saturated). If any lower GROUND exists (a slope or ledge), never step up — hold
+        // the excess in place (it renders as a full block and drains downhill on a later pass).
+        // This is what stops the step-up flash at terrain step-downs and the orphan floating cell
+        // that a transiently-risen cell leaves when its base drains away.
+        if (amount > FULL && (count == 0 || nSurf[0] >= (y + 1) * FULL)) {
+            // Confined: a real basin/hole layer is saturated, so rise into the cell above.
             long above = BlockPos.asLong(x, y + 1, z);
             if (y + 1 < level.getMaxBuildHeight() && canOccupy(level, above) && !isWater(level, above)) {
-                int excess = amount - FULL;
-                addLevel(level, above, excess, maxCells);
+                addLevel(level, above, amount - FULL, maxCells);
                 moved = true;
             }
-            // Whether it overflowed up or is simply sealed under a ceiling, this cell clamps to
-            // a full block (any excess that couldn't rise is lost — rare, only under an overhang).
-            setLevel(level, pos, FULL, maxCells);
+            setLevel(level, pos, FULL, maxCells); // rose, or sealed under a ceiling (excess lost)
         } else if (amount != levels.get(pos)) {
-            // Only write when something actually changed, so a settled cell stops waking its
-            // neighbours and truly costs nothing on later ticks.
+            // Otherwise hold whatever remains — a ≤FULL settled level, or (on a slope/ledge with a
+            // downhill escape) an over-full amount that renders as a full block and drains downhill
+            // on a later pass. An over-full cell reports negative capacity, so neighbours never feed
+            // it more; the excess stays conserved and bounded until it can move on. Writing only on
+            // change keeps a settled cell from waking its neighbours every tick.
             setLevel(level, pos, amount, maxCells);
         }
 
