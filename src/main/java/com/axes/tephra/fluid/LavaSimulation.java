@@ -200,10 +200,9 @@ public final class LavaSimulation {
     /**
      * One cell of gravity: moves lava down a single block if it can, quenching on water. Run once
      * per tick (lowest cells first) so a fall descends a block at a time — a cliff reads as a
-     * cohesive falling stream, fed from the top, rather than teleporting to the bottom. While
-     * there is lava directly above (this cell is mid-column of a live waterfall) a 1-unit film is
-     * left behind so the column stays visually continuous; once the feed stops the top loses its
-     * lava-above, passes everything down, and the column drains gradually from the top.
+     * descending stream fed from the top rather than teleporting to the bottom. All of the cell's
+     * lava passes straight down: the fall advances exactly one block per tick, the same rate as
+     * the horizontal front, so lava never backs up or pools in mid-air.
      */
     private boolean gravityStep(Level level, long pos, int maxCells) {
         int amount = levels.get(pos);
@@ -221,11 +220,7 @@ public final class LavaSimulation {
             return true;
         }
         int cap = FULL - existingLevel(level, below);
-        if (cap <= 0) {
-            return false;
-        }
-        int keep = levels.get(BlockPos.asLong(x, y + 1, z)) > 0 ? 1 : 0;
-        int d = Math.min(amount - keep, cap);
+        int d = Math.min(amount, cap);
         if (d > 0) {
             addLevel(level, below, d, maxCells);
             setLevel(level, pos, amount - d, maxCells);
