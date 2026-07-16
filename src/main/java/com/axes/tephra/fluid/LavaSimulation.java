@@ -159,34 +159,48 @@ public final class LavaSimulation {
 
     // --- Relaxation (the flow rules) -----------------------------------------------------
 
-    /**
-     * Repeatedly relaxes active cells toward equilibrium. Cells are processed highest-first so
-     * gravity cascades resolve in a single pass; horizontal equalisation converges over
-     * several passes (and, if needed, several sim steps — that gradual settling reads as
-     * flowing lava). Bounded by both an op budget and a pass count so it always terminates.
-     */
+    /** Highest cells first, so gravity cascades and downhill flow resolve top-down. */
     private static final LongComparator BY_DESCENDING_Y =
             (a, b) -> Integer.compare(BlockPos.getY(b), BlockPos.getY(a));
 
+    /**
+     * One simulation tick. Falls are resolved to completion (instant, no mid-air flash), then the
+     * lateral front is advanced by a single pass (about one block, for a river pace), then any new
+     * falls the flow created are resolved. Everything is bounded by the per-tick op budget.
+     */
     private void relax(Level level, int maxOps, int maxCells) {
-        int ops = 0;
-        for (int pass = 0; pass < 8 && ops < maxOps && !active.isEmpty(); pass++) {
-            // Snapshot the active set and sort by descending Y so higher lava moves first.
+        int[] ops = {0};
+        // Resolve every pending fall first, so nothing is left hanging in mid-air.
+        gravityToCompletion(level, maxOps, maxCells, ops);
+        // Then advance the lateral front by exactly ONE pass: cells fed during it are queued for
+        // next tick, so a channel creeps ~one block per tick (a river) instead of streaking down
+        // the whole hill in a single tick. Sim runs every lavaFlowAdvanceInterval ticks.
+        LongArrayList work = new LongArrayList(active);
+        work.sort(BY_DESCENDING_Y);
+        for (int i = 0; i < work.size() && ops[0] < maxOps; i++) {
+            ops[0]++;
+            long pos = work.getLong(i);
+            if (!flowStep(level, pos, maxCells)) {
+                active.remove(pos); // settled this tick
+            }
+        }
+        // Resolve any new falls the flow just created (lava poured over a cliff edge).
+        gravityToCompletion(level, maxOps, maxCells, ops);
+    }
+
+    /** Loops gravity over the active set until nothing else can fall, so drops resolve within the
+     *  single tick they start in — instant falling, no mid-air flash. */
+    private void gravityToCompletion(Level level, int maxOps, int maxCells, int[] ops) {
+        boolean fell = true;
+        for (int guard = 0; fell && guard < 256 && ops[0] < maxOps; guard++) {
+            fell = false;
             LongArrayList work = new LongArrayList(active);
             work.sort(BY_DESCENDING_Y);
-
-            boolean movedAny = false;
-            for (int i = 0; i < work.size() && ops < maxOps; i++) {
-                long pos = work.getLong(i);
-                ops++;
-                if (process(level, pos, maxCells)) {
-                    movedAny = true;
-                } else {
-                    active.remove(pos); // settled this pass
+            for (int i = 0; i < work.size() && ops[0] < maxOps; i++) {
+                ops[0]++;
+                if (gravityStep(level, work.getLong(i), maxCells)) {
+                    fell = true;
                 }
-            }
-            if (!movedAny) {
-                break;
             }
         }
     }
@@ -196,7 +210,43 @@ public final class LavaSimulation {
      *
      * @return true if lava moved (the cell and its neighbours stay active).
      */
-    private boolean process(Level level, long pos, int maxCells) {
+    /**
+     * One cell of gravity: moves lava down a single block if it can, quenching on water. The
+     * relaxation loops this to completion each tick so a fall resolves in a single sim tick (no
+     * lava left hanging in mid-air down a cliff), while never advancing the lateral front — that
+     * is what {@link #flowStep} does, once per tick, to keep flow to a river pace.
+     */
+    private boolean gravityStep(Level level, long pos, int maxCells) {
+        int amount = levels.get(pos);
+        if (amount <= 0) {
+            remove(level, pos);
+            return false;
+        }
+        int x = BlockPos.getX(pos), y = BlockPos.getY(pos), z = BlockPos.getZ(pos);
+        long below = BlockPos.asLong(x, y - 1, z);
+        if (y - 1 < level.getMinBuildHeight() || !canOccupy(level, below)) {
+            return false;
+        }
+        if (quenchIfWater(level, below)) {
+            setLevel(level, pos, Math.max(0, amount - FULL), maxCells);
+            return true;
+        }
+        int cap = FULL - existingLevel(level, below);
+        if (cap > 0) {
+            int d = Math.min(amount, cap);
+            addLevel(level, below, d, maxCells);
+            setLevel(level, pos, amount - d, maxCells);
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * One horizontal flow step (no gravity): spills toward lower landings, seeks a downhill drop,
+     * and overflows only when truly confined. Run <b>once</b> per sim tick so the lateral front
+     * advances about one cell per tick — a flowing river, not an instant streak downhill.
+     */
+    private boolean flowStep(Level level, long pos, int maxCells) {
         int amount = levels.get(pos);
         if (amount <= 0) {
             remove(level, pos);
@@ -212,33 +262,6 @@ public final class LavaSimulation {
         }
         int x = BlockPos.getX(pos), y = BlockPos.getY(pos), z = BlockPos.getZ(pos);
         boolean moved = false;
-
-        // 1. GRAVITY — drain downward first.
-        long below = BlockPos.asLong(x, y - 1, z);
-        if (y - 1 >= level.getMinBuildHeight() && canOccupy(level, below)) {
-            if (quenchIfWater(level, below)) {
-                // Poured onto/into water: consume a unit of lava as new land, keep the rest.
-                amount = Math.max(0, amount - FULL);
-                setLevel(level, pos, amount, maxCells);
-                moved = true;
-                if (amount <= 0) {
-                    return true;
-                }
-            } else {
-                int belowLvl = existingLevel(level, below);
-                int cap = FULL - belowLvl;
-                if (cap > 0) {
-                    int d = Math.min(amount, cap);
-                    addLevel(level, below, d, maxCells);
-                    amount -= d;
-                    setLevel(level, pos, amount, maxCells);
-                    moved = true;
-                    if (amount <= 0) {
-                        return true;
-                    }
-                }
-            }
-        }
 
         // 2. HORIZONTAL SPILL — pour toward every lower surface, lowest-first. Each neighbour's
         // target height is its true LANDING surface (probed straight down), so a downhill or
@@ -307,6 +330,16 @@ public final class LavaSimulation {
                 continue;
             }
             int diff = surface - nSurf[k];
+            int excess = Math.max(0, amount - FULL);
+            // Break the perfect Manhattan diamond into an organic delta: on FLAT ground each cell
+            // has a fixed pseudo-random stickiness (0..2 from its coordinates), and lava only
+            // creeps onto it once the head exceeds that. Sticky cells stay dry longer, so the front
+            // fingers and lobes instead of expanding as a clean diamond. Downhill flow (a lower
+            // landing) and unphysical excess ignore it and always move.
+            boolean flat = BlockPos.getY(nPos[k]) >= y;
+            if (flat && excess == 0 && diff <= stickiness(nPos[k])) {
+                continue;
+            }
             // Two parts move: a gentle, viscosity-capped amount that gives the flow a visible
             // channel (a real head of >= 2 units, so near-level lava can't creep a thin sheet
             // across flats; FLOOR(diff/2) moves toward level without the overshoot that would
@@ -314,7 +347,6 @@ public final class LavaSimulation {
             // resolves downhill in this pass rather than overflowing upward and flashing a face
             // at a step-down.
             int gentle = diff >= 2 ? Math.min(diff / 2, viscosity) : 0;
-            int excess = Math.max(0, amount - FULL);
             int t = Math.min(Math.min(amount, capacity), excess + gentle);
             if (t > 0) {
                 addLevel(level, nPos[k], t, maxCells);
@@ -398,6 +430,18 @@ public final class LavaSimulation {
 
     private int surfaceOf(Level level, long cell) {
         return BlockPos.getY(cell) * FULL + existingLevel(level, cell);
+    }
+
+    /**
+     * A fixed per-cell "stickiness" (0..2) derived from the cell's packed coordinates — the same
+     * cell always yields the same value, so the organic fingers it creates on flat ground are
+     * stable terrain, not shimmering noise. Weighted toward 0 so most ground still floods freely.
+     */
+    private static int stickiness(long pos) {
+        long h = pos * 0x9E3779B97F4A7C15L;
+        h ^= (h >>> 29);
+        int v = (int) (h & 7L);
+        return v < 4 ? 0 : (v < 7 ? 1 : 2); // ~50% none, ~37% mild, ~13% strong
     }
 
     /**
@@ -572,8 +616,10 @@ public final class LavaSimulation {
     }
 
     /**
-     * Quenches lava at a water-touching cell into permanent land (molten cinder, which ages to
-     * rock), displacing the water. Returns true if land was built.
+     * Quenches lava at a water-touching cell into permanent basalt, displacing the water — the
+     * chilled-margin rock that real lava forms where it meets water. A full layered-basalt block
+     * (not molten cinder) so it reads as cold, finished stone right away. Returns true if land
+     * was built.
      */
     private boolean quenchIfWater(Level level, long pos) {
         BlockPos bp = BlockPos.of(pos);
@@ -581,7 +627,8 @@ public final class LavaSimulation {
             return false;
         }
         if (isWater(level, pos) || touchesWater(level, pos)) {
-            level.setBlockAndUpdate(bp, TephraBlocks.MOLTEN_CINDER.get().defaultBlockState());
+            level.setBlockAndUpdate(bp, TephraBlocks.LAYERED_BASALT.get().defaultBlockState()
+                    .setValue(LayeredBasaltBlock.LAYERS, FULL));
             return true;
         }
         return false;

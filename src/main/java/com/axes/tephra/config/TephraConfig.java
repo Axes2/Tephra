@@ -49,9 +49,10 @@ public class TephraConfig {
             builder.push("LavaFlow");
 
             lavaFlowAdvanceInterval = builder
-                    .comment("Ticks between each simulation step of the lava flow while erupting. Higher =",
-                            "slower, calmer flows that advance fewer blocks per second. Default: 16")
-                    .defineInRange("lavaFlowAdvanceInterval", 16, 1, 200);
+                    .comment("Ticks between each simulation step while erupting. The flow front advances",
+                            "about one block per step, so this sets the flow speed: blocks/second is",
+                            "roughly 20 / this value. Higher = slower, calmer rivers. Default: 8 (~2/sec)")
+                    .defineInRange("lavaFlowAdvanceInterval", 8, 1, 200);
 
             lavaFlowMaxHeads = builder
                     .comment("Maximum simultaneous flow fronts ('heads') a single volcano may drive.",
