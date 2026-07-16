@@ -13,6 +13,10 @@ public class TephraConfig {
         public final ModConfigSpec.IntValue lavaFlowMaxHeads;
         public final ModConfigSpec.DoubleValue lavaFlowBranchChance;
         public final ModConfigSpec.IntValue lavaFlowCoolingDelay;
+        public final ModConfigSpec.IntValue lavaFlowEruptionRate;
+        public final ModConfigSpec.IntValue lavaFlowViscosity;
+        public final ModConfigSpec.IntValue lavaFlowMaxCells;
+        public final ModConfigSpec.IntValue lavaFlowMaxOps;
 
         public final ModConfigSpec.BooleanValue screenShake;
 
@@ -65,6 +69,33 @@ public class TephraConfig {
                             "liquid longer before solidifying in place). Cooling always starts at the",
                             "exposed edges of a flow and spares actively-flowing lava. Default: 2")
                     .defineInRange("lavaFlowCoolingDelay", 2, 1, 40);
+
+            // --- Height-field simulation (LavaSimulation) ---
+
+            lavaFlowEruptionRate = builder
+                    .comment("Units of lava each vent injects into the height-field simulation per sim",
+                            "step (8 units = one full block). This is the master 'output' of an",
+                            "eruption: higher = more voluminous, faster-spreading flow fields. Default: 24")
+                    .defineInRange("lavaFlowEruptionRate", 24, 1, 512);
+
+            lavaFlowViscosity = builder
+                    .comment("Maximum units of lava a single cell sheds sideways per simulation step",
+                            "(1 block = 8 units). This is the flow's viscosity: lower = stiffer, thicker,",
+                            "shorter flows that pile up; higher = runnier, thinner, longer flows. Downhill",
+                            "always follows the fall line regardless. Default: 4")
+                    .defineInRange("lavaFlowViscosity", 4, 1, 8);
+
+            lavaFlowMaxCells = builder
+                    .comment("Hard cap on the number of live lava cells a single volcano may simulate at",
+                            "once. Bounds memory and the size of a flow field. Settled lava is nearly",
+                            "free; this mostly caps a single runaway eruption. Default: 6000")
+                    .defineInRange("lavaFlowMaxCells", 6000, 256, 200000);
+
+            lavaFlowMaxOps = builder
+                    .comment("Budget of cell updates the simulation may perform per sim step, bounding",
+                            "server cost near an erupting volcano. Lower = cheaper but lava settles more",
+                            "slowly. Default: 4000")
+                    .defineInRange("lavaFlowMaxOps", 4000, 256, 100000);
 
             builder.pop();
         }

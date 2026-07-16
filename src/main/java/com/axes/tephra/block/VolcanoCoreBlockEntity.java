@@ -35,6 +35,10 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
     // Persisted so an eruption interrupted by a save/reload keeps flowing where it left off.
     private final Set<BlockPos> flowHeads = new HashSet<>();
 
+    // The authoritative height-field lava simulation for this volcano. Created lazily; its
+    // cells are persisted so an eruption interrupted by save/reload resumes exactly.
+    private com.axes.tephra.fluid.LavaSimulation lavaSim;
+
     // Default to CINDER_CONE for backwards compatibility
     private VolcanoType volcanoType = VolcanoType.CINDER_CONE;
     private VolcanoProfile activeProfile = new CinderConeProfile();
@@ -105,6 +109,14 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
 
     public void removeFlowHead(BlockPos pos) {
         this.flowHeads.remove(pos);
+    }
+
+    /** The lava height-field simulation for this volcano, created on first use. */
+    public com.axes.tephra.fluid.LavaSimulation getLavaSimulation() {
+        if (this.lavaSim == null) {
+            this.lavaSim = new com.axes.tephra.fluid.LavaSimulation();
+        }
+        return this.lavaSim;
     }
 
     /**
@@ -226,9 +238,10 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
         // that build the edifice. This carries lava well beyond the vanilla ~7-block reach.
         if (currentPhase == VolcanoPhase.ERUPTING) {
             com.axes.tephra.fluid.LavaFlowEngine.tick(level, pos, blockEntity);
-        } else if (!blockEntity.flowHeads.isEmpty()) {
-            // Eruption over: stop protecting the fronts so they finish cooling into rock.
-            blockEntity.flowHeads.clear();
+        } else if (blockEntity.lavaSim != null && !blockEntity.lavaSim.isEmpty()) {
+            // Eruption over: release the simulated cells so they cool and crust in place —
+            // the flow "dying down" — instead of being driven any further.
+            blockEntity.lavaSim.release(level);
             blockEntity.setChanged();
         }
 
@@ -371,6 +384,9 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
         tag.putLong("LastRecordedGameTime", level != null ? level.getGameTime() : this.lastRecordedGameTime);
         tag.putLongArray("VentSources", this.ventSources.stream().mapToLong(BlockPos::asLong).toArray());
         tag.putLongArray("FlowHeads", this.flowHeads.stream().mapToLong(BlockPos::asLong).toArray());
+        if (this.lavaSim != null && !this.lavaSim.isEmpty()) {
+            tag.put("LavaSim", this.lavaSim.save());
+        }
     }
 
     @Override
@@ -392,6 +408,9 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
         this.flowHeads.clear();
         for (long packedPos : tag.getLongArray("FlowHeads")) {
             this.flowHeads.add(BlockPos.of(packedPos));
+        }
+        if (tag.contains("LavaSim")) {
+            getLavaSimulation().load(tag.getCompound("LavaSim"));
         }
         if (tag.contains("VolcanoType")) {
             String typeName = tag.getString("VolcanoType");

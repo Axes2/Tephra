@@ -23,10 +23,11 @@ import net.neoforged.neoforge.fluids.BaseFlowingFluid;
 import org.jetbrains.annotations.Nullable;
 
 /**
- * The liquid half of the volcano system. Long-range transport is handled by
- * {@link LavaFlowEngine}, which marches source blocks downhill; the vanilla fluid engine
- * only renders and fills the smooth segments between them. This class supplies vanilla-lava
- * fire spread and the <b>delayed cooling</b> rule that eventually turns settled flows into
+ * The liquid half of the volcano system. All spreading is now driven by the authoritative
+ * {@link LavaSimulation} height field, which writes molten-basalt blocks into the world; the
+ * vanilla fluid engine only renders the smooth sloped surfaces those blocks describe and does
+ * <b>not</b> spread or recede them (see {@link #tick}). This class supplies vanilla-lava fire
+ * spread and the <b>delayed cooling</b> rule that eventually turns settled flows into
  * permanent volcanic rock.
  *
  * <p>Cooling is deliberately slow and gated so lava stays visibly molten while it flows:
@@ -60,19 +61,15 @@ public abstract class MoltenBasaltFluid extends BaseFlowingFluid {
     }
 
     /**
-     * Scheduled fluid tick. Vanilla would let trailing lava that has lost its feed recede and
-     * vanish, leaving bare holes in a hardened flow. Instead, the moment a flowing cell is no
-     * longer fed we freeze it into rock in place, so flows harden thoroughly with no gaps.
-     * Fed lava (a live channel) and protected vents/fronts keep flowing via vanilla.
+     * Scheduled fluid tick — deliberately a no-op. The {@link LavaSimulation} height field is
+     * the sole authority over where molten basalt is and how deep it is; letting the vanilla
+     * fluid engine also spread or recede these blocks would fight the simulation and reintroduce
+     * the decay-ring artifacts the height field exists to remove. Cooling into rock happens on
+     * the random tick ({@link #cool}) once the simulation has released a cell.
      */
     @Override
     public void tick(Level level, BlockPos pos, FluidState state) {
-        if (!state.isSource() && !LavaFlowEngine.isProtected(level, pos)
-                && !isFed(level, pos, state.getAmount())) {
-            freeze(level, pos, state, state.getAmount());
-            return;
-        }
-        super.tick(level, pos, state);
+        // Intentionally empty: no vanilla spreading. See LavaSimulation.
     }
 
     // --- COOLING: how settled lava becomes permanent volcanic rock ---

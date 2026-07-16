@@ -242,15 +242,38 @@ describe a coherent, volume-conserved surface instead of decay rings.
 
 ## Part 3 — Implementation phases
 
-**Phase 1 — Simulation core.**
-`LavaSimulation` class: cell map, active queue, gravity/spill/overflow/viscosity
-rules, vent injection, world writeback, adoption of existing molten basalt.
-Neutralize vanilla spread (`MoltenBasaltFluid.tick()` no-op). Wire into
-`VolcanoCoreBlockEntity.tick` behind the ERUPTING/RECOVERY phases. Delete
-head-marching internals of `LavaFlowEngine` (keep the class as the public entry
-point). *Exit criteria:* lava follows fall lines, fills basins level-by-level,
-overflows the true lowest rim, never steps up on open slopes, surface is
-consistent.
+**Phase 1 — Simulation core. ✅ DONE.**
+`LavaSimulation` class: cell map (`Long2IntOpenHashMap`), active work-set,
+gravity/spill/overflow rules, vent injection, world writeback, NBT persistence.
+Vanilla spread neutralized (`MoltenBasaltFluid.tick()` is now a no-op). Wired
+into `VolcanoCoreBlockEntity.tick`; the sim is released to cool when the eruption
+ends. `LavaFlowEngine` reduced to the public entry point plus the live-cell
+protection registry the cooling rule reads.
+
+Two refinements were found during validation and folded in:
+- **Landing-surface probing.** A horizontal neighbour's target height is its true
+  resting surface (probed straight down), not an assume-floor-at-Y estimate.
+  Without this, downhill heads read as tiny and flows stall as a thin skin near
+  the vent; with it, lava reads a slope/cliff as a real drop and runs the fall
+  line far.
+- **Viscosity cap** (`lavaFlowViscosity`). Sideways transfer per cell per step is
+  capped, so a visible channel is left behind the advancing front instead of a
+  cell fully draining in one step. Low = stiff/short, high = runny/long.
+
+*Exit criteria — all verified* via a standalone port of the flow rules
+(`docs`-external harness) on synthetic terrain: lava follows fall lines (slope
+reached 28/30 cells with a monotonically-descending surface), fills basins
+level-by-level and overflows the genuinely lowest rim (never overtopping higher
+walls), never steps up on open slopes, surface is consistent, volume is
+conserved, and the field always settles (terminates). New config keys:
+`lavaFlowEruptionRate`, `lavaFlowViscosity`, `lavaFlowMaxCells`,
+`lavaFlowMaxOps`. (The old `lavaFlowMaxHeads` / `lavaFlowBranchChance` keys are
+now unused and will be retired in Phase 2 alongside the cooling rewrite.)
+
+> Note: the mod could not be compiled in the authoring environment (the NeoForge
+> maven repositories are blocked by the egress policy and the artifacts were not
+> cached), so runtime verification used the standalone rule-port harness rather
+> than an in-game session. A normal `./gradlew build` should be run before merge.
 
 **Phase 2 — Feed & cooling.**
 BFS fed-distance field, heat model, freeze rules; delete the protection registry
