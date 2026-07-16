@@ -159,48 +159,35 @@ public final class LavaSimulation {
 
     // --- Relaxation (the flow rules) -----------------------------------------------------
 
-    /** Highest cells first, so gravity cascades and downhill flow resolve top-down. */
+    /** Highest cells first, so downhill flow resolves top-down. */
     private static final LongComparator BY_DESCENDING_Y =
             (a, b) -> Integer.compare(BlockPos.getY(b), BlockPos.getY(a));
+    /** Lowest cells first, so a fall advances exactly one block per pass (the cell below has
+     *  already been processed and won't cascade further) — a stream, not an instant drop. */
+    private static final LongComparator BY_ASCENDING_Y =
+            (a, b) -> Integer.compare(BlockPos.getY(a), BlockPos.getY(b));
 
     /**
-     * One simulation tick. Falls are resolved to completion (instant, no mid-air flash), then the
-     * lateral front is advanced by a single pass (about one block, for a river pace), then any new
-     * falls the flow created are resolved. Everything is bounded by the per-tick op budget.
+     * One simulation tick: one gravity pass (falls advance a block, so a cliff reads as a
+     * descending stream that stays lit while fed, not a teleport), then one lateral flow pass
+     * (the front creeps ~one block, a river not a streak). Both advance about a block per tick,
+     * so flow speed is roughly {@code 20 / lavaFlowAdvanceInterval} blocks per second.
      */
     private void relax(Level level, int maxOps, int maxCells) {
-        int[] ops = {0};
-        // Resolve every pending fall first, so nothing is left hanging in mid-air.
-        gravityToCompletion(level, maxOps, maxCells, ops);
-        // Then advance the lateral front by exactly ONE pass: cells fed during it are queued for
-        // next tick, so a channel creeps ~one block per tick (a river) instead of streaking down
-        // the whole hill in a single tick. Sim runs every lavaFlowAdvanceInterval ticks.
+        int ops = 0;
+        LongArrayList fall = new LongArrayList(active);
+        fall.sort(BY_ASCENDING_Y);
+        for (int i = 0; i < fall.size() && ops < maxOps; i++) {
+            ops++;
+            gravityStep(level, fall.getLong(i), maxCells);
+        }
         LongArrayList work = new LongArrayList(active);
         work.sort(BY_DESCENDING_Y);
-        for (int i = 0; i < work.size() && ops[0] < maxOps; i++) {
-            ops[0]++;
+        for (int i = 0; i < work.size() && ops < maxOps; i++) {
+            ops++;
             long pos = work.getLong(i);
             if (!flowStep(level, pos, maxCells)) {
                 active.remove(pos); // settled this tick
-            }
-        }
-        // Resolve any new falls the flow just created (lava poured over a cliff edge).
-        gravityToCompletion(level, maxOps, maxCells, ops);
-    }
-
-    /** Loops gravity over the active set until nothing else can fall, so drops resolve within the
-     *  single tick they start in — instant falling, no mid-air flash. */
-    private void gravityToCompletion(Level level, int maxOps, int maxCells, int[] ops) {
-        boolean fell = true;
-        for (int guard = 0; fell && guard < 256 && ops[0] < maxOps; guard++) {
-            fell = false;
-            LongArrayList work = new LongArrayList(active);
-            work.sort(BY_DESCENDING_Y);
-            for (int i = 0; i < work.size() && ops[0] < maxOps; i++) {
-                ops[0]++;
-                if (gravityStep(level, work.getLong(i), maxCells)) {
-                    fell = true;
-                }
             }
         }
     }
@@ -211,10 +198,12 @@ public final class LavaSimulation {
      * @return true if lava moved (the cell and its neighbours stay active).
      */
     /**
-     * One cell of gravity: moves lava down a single block if it can, quenching on water. The
-     * relaxation loops this to completion each tick so a fall resolves in a single sim tick (no
-     * lava left hanging in mid-air down a cliff), while never advancing the lateral front — that
-     * is what {@link #flowStep} does, once per tick, to keep flow to a river pace.
+     * One cell of gravity: moves lava down a single block if it can, quenching on water. Run once
+     * per tick (lowest cells first) so a fall descends a block at a time — a cliff reads as a
+     * cohesive falling stream, fed from the top, rather than teleporting to the bottom. While
+     * there is lava directly above (this cell is mid-column of a live waterfall) a 1-unit film is
+     * left behind so the column stays visually continuous; once the feed stops the top loses its
+     * lava-above, passes everything down, and the column drains gradually from the top.
      */
     private boolean gravityStep(Level level, long pos, int maxCells) {
         int amount = levels.get(pos);
@@ -232,8 +221,12 @@ public final class LavaSimulation {
             return true;
         }
         int cap = FULL - existingLevel(level, below);
-        if (cap > 0) {
-            int d = Math.min(amount, cap);
+        if (cap <= 0) {
+            return false;
+        }
+        int keep = levels.get(BlockPos.asLong(x, y + 1, z)) > 0 ? 1 : 0;
+        int d = Math.min(amount - keep, cap);
+        if (d > 0) {
             addLevel(level, below, d, maxCells);
             setLevel(level, pos, amount - d, maxCells);
             return true;
@@ -261,6 +254,15 @@ public final class LavaSimulation {
             return false;
         }
         int x = BlockPos.getX(pos), y = BlockPos.getY(pos), z = BlockPos.getZ(pos);
+
+        // A cell that can still fall does NOT spread sideways this tick — it just falls (gravity
+        // handles it). This keeps lava from walking horizontally out over a cliff/void at the
+        // source's height: it must pour over the edge and descend as a stream.
+        long belowPos = BlockPos.asLong(x, y - 1, z);
+        if (y - 1 >= level.getMinBuildHeight() && canOccupy(level, belowPos)
+                && existingLevel(level, belowPos) < FULL) {
+            return false;
+        }
         boolean moved = false;
 
         // 2. HORIZONTAL SPILL — pour toward every lower surface, lowest-first. Each neighbour's
@@ -285,14 +287,22 @@ public final class LavaSimulation {
                 count++;
                 continue;
             }
-            // Deposit at the neighbour's true landing cell (its rest position), falling back to
-            // the same-Y cell for a long drop so gravity cascades a proper falling column.
+            // The neighbour's true landing surface (probed down) drives the flow decision, so a
+            // slope or cliff reads as a real drop. For a genuine drop (≥2 blocks) DEPOSIT at the
+            // same-Y edge cell and let gravity stream it down; for flat or a single step, deposit
+            // at the rest cell so lava never floats a tick above a step-down.
             long land = landingCell(level, nx, y, nz);
+            long deposit;
+            int surf;
             if (land == NO_LANDING) {
-                land = npos;
+                deposit = npos;
+                surf = Math.max(level.getMinBuildHeight(), y - MAX_DROP) * FULL;
+            } else {
+                surf = surfaceOf(level, land);
+                deposit = BlockPos.getY(land) >= y - 1 ? land : npos;
             }
-            nPos[count] = land;
-            nSurf[count] = surfaceOf(level, land);
+            nPos[count] = deposit;
+            nSurf[count] = surf;
             nWater[count] = false;
             count++;
         }
