@@ -36,8 +36,9 @@ import net.minecraft.world.level.block.state.BlockState;
  * </ul>
  *
  * <p>Volume is conserved everywhere except where lava quenches on water (building land).
- * Vents inject a fixed budget of units per step, so long flows happen because the volcano
- * keeps supplying lava — not because a travel budget marched a source past a cliff. The
+ * Vents are springs held at a capped over-pressure — they feed the flow as fast as it can
+ * carry lava away but never accumulate into a tower — so long flows happen because the volcano
+ * keeps supplying lava, not because a travel budget marched a source past a cliff. The
  * vanilla fluid engine no longer spreads anything (see
  * {@link MoltenBasaltFluid#tick}); it only renders the smooth sloped surfaces described by
  * the cell levels this class writes into the world.
@@ -132,20 +133,23 @@ public final class LavaSimulation {
     // --- Injection -----------------------------------------------------------------------
 
     /**
-     * Each live vent is a permanent full source; every step it pushes {@code rate} fresh units
-     * out into its surroundings. Adding the units on top of the vent's own column lets the
-     * normal relaxation carry them downhill, pool them, or (when hemmed in) raise the pool —
-     * so the vent behaves like a spring feeding the flow field.
+     * Each live vent is a spring: it is topped up to a full block plus {@code rate} units of
+     * over-pressure whenever the flow has drained it below that, and otherwise left alone. The
+     * cap is the key to a natural-looking vent — the excess drives lava outward, but the vent
+     * can never accumulate faster than the flow carries it away, so it never towers up into a
+     * deep pool or pillar. Output the flow can't take is simply not emitted (the volcano holds
+     * it back), rather than piling at the source.
      */
     private void injectFromVents(Level level, VolcanoCoreBlockEntity be, int rate, int maxCells) {
+        int target = FULL + rate;
         for (BlockPos vent : be.getVentSources()) {
             if (!level.isLoaded(vent)) {
                 continue;
             }
             long key = vent.asLong();
-            // Pin the vent column full and add the fresh output on top as spillable excess.
-            int current = levels.get(key);
-            setLevel(level, key, Math.max(current, FULL) + rate, maxCells);
+            if (levels.get(key) < target) {
+                setLevel(level, key, target, maxCells);
+            }
         }
     }
 
@@ -254,8 +258,14 @@ public final class LavaSimulation {
                 count++;
                 continue;
             }
-            nPos[count] = npos;
-            nSurf[count] = landingSurface(level, nx, y, nz);
+            // Deposit at the neighbour's true landing cell (its rest position), falling back to
+            // the same-Y cell for a long drop so gravity cascades a proper falling column.
+            long land = landingCell(level, nx, y, nz);
+            if (land == NO_LANDING) {
+                land = npos;
+            }
+            nPos[count] = land;
+            nSurf[count] = surfaceOf(land);
             nWater[count] = false;
             count++;
         }
@@ -325,31 +335,36 @@ public final class LavaSimulation {
         return moved;
     }
 
+    /** Sentinel from {@link #landingCell} meaning no support was found within {@link #MAX_DROP}. */
+    private static final long NO_LANDING = Long.MIN_VALUE;
+
     /**
-     * The surface height {@code y*8 + level} that a parcel of lava entering column
-     * ({@code nx},{@code nz}) at {@code yStart} would settle to, probing straight down through
-     * open air until it lands on ground or existing lava. Using this (rather than assuming the
-     * neighbour's floor is at {@code yStart}) is what lets lava read a slope or cliff as a real
-     * drop and run the fall line, instead of stalling as a thin equalised skin near the vent.
+     * The cell a parcel of lava entering column ({@code nx},{@code nz}) at {@code yStart} comes
+     * to rest in, probing straight down through open air until it lands on ground or existing
+     * lava. Depositing spilled lava <em>here</em> — at its true rest position — rather than at
+     * the same-Y neighbour is what keeps lava from rendering floating for a tick before gravity
+     * drops it (the brief "flash up a block" artifact). Probing the real landing also lets lava
+     * read a slope or cliff as a genuine drop and run the fall line instead of stalling as a
+     * thin equalised skin near the vent. Returns {@link #NO_LANDING} when nothing supports the
+     * column within {@link #MAX_DROP}, so the caller can let gravity cascade a falling column.
      */
-    private int landingSurface(Level level, int nx, int yStart, int nz) {
+    private long landingCell(Level level, int nx, int yStart, int nz) {
         int floor = Math.max(level.getMinBuildHeight(), yStart - MAX_DROP);
         for (int yy = yStart; yy > floor; yy--) {
             long here = BlockPos.asLong(nx, yy, nz);
-            int lvl = levels.get(here);
-            if (lvl > 0) {
-                return yy * FULL + lvl; // rests on lava already in this column
+            if (levels.get(here) > 0) {
+                return here; // rests in lava already in this column (stacks up to FULL)
             }
             long below = BlockPos.asLong(nx, yy - 1, nz);
-            int belowLvl = levels.get(below);
-            if (belowLvl > 0) {
-                return (yy - 1) * FULL + belowLvl; // lava directly beneath
-            }
-            if (isWall(level, below)) {
-                return yy * FULL; // solid ground (or an unloaded chunk) — rest on top of it
+            if (levels.get(below) > 0 || isWall(level, below)) {
+                return here; // empty cell supported by lava/ground below — rest here
             }
         }
-        return floor * FULL; // a long drop into the void: treat as very low so lava pours off
+        return NO_LANDING; // a long drop: let gravity fall a proper column from the same-Y cell
+    }
+
+    private int surfaceOf(long cell) {
+        return BlockPos.getY(cell) * FULL + levels.get(cell);
     }
 
     // --- Cell mutation -------------------------------------------------------------------

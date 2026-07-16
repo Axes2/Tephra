@@ -73,10 +73,12 @@ public class TephraConfig {
             // --- Height-field simulation (LavaSimulation) ---
 
             lavaFlowEruptionRate = builder
-                    .comment("Units of lava each vent injects into the height-field simulation per sim",
-                            "step (8 units = one full block). This is the master 'output' of an",
-                            "eruption: higher = more voluminous, faster-spreading flow fields. Default: 24")
-                    .defineInRange("lavaFlowEruptionRate", 24, 1, 512);
+                    .comment("Vent over-pressure: how many extra units above a full block each vent holds",
+                            "and feeds into the flow per sim step (8 units = one full block). The vent is",
+                            "capped at this over-pressure, so it can never accumulate into a tower — excess",
+                            "the flow can't carry away is simply not emitted. Higher = more voluminous,",
+                            "faster-spreading flows. Default: 4")
+                    .defineInRange("lavaFlowEruptionRate", 4, 1, 512);
 
             lavaFlowViscosity = builder
                     .comment("Maximum units of lava a single cell sheds sideways per simulation step",
