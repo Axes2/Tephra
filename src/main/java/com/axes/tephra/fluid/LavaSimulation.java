@@ -1,5 +1,6 @@
 package com.axes.tephra.fluid;
 
+import com.axes.tephra.block.LayeredBasaltBlock;
 import com.axes.tephra.block.TephraBlocks;
 import com.axes.tephra.block.VolcanoCoreBlockEntity;
 import com.axes.tephra.config.TephraConfig;
@@ -54,6 +55,9 @@ public final class LavaSimulation {
 
     /** Deepest a neighbour's landing surface is probed when judging downhill flow. */
     private static final int MAX_DROP = 8;
+
+    /** How far a confined cell scans across a flat for a downhill drop before it rises. */
+    private static final int SLOPE_FIND = 4;
 
     /** Max units a cell may shed sideways per step (viscosity); refreshed from config each tick. */
     private int viscosity = 4;
@@ -221,7 +225,7 @@ public final class LavaSimulation {
                     return true;
                 }
             } else {
-                int belowLvl = levels.get(below);
+                int belowLvl = existingLevel(level, below);
                 int cap = FULL - belowLvl;
                 if (cap > 0) {
                     int d = Math.min(amount, cap);
@@ -265,7 +269,7 @@ public final class LavaSimulation {
                 land = npos;
             }
             nPos[count] = land;
-            nSurf[count] = surfaceOf(land);
+            nSurf[count] = surfaceOf(level, land);
             nWater[count] = false;
             count++;
         }
@@ -297,7 +301,7 @@ public final class LavaSimulation {
                 }
                 continue;
             }
-            int nLvl = levels.get(nPos[k]);
+            int nLvl = existingLevel(level, nPos[k]);
             int capacity = FULL - nLvl;
             if (capacity <= 0) {
                 continue;
@@ -325,13 +329,29 @@ public final class LavaSimulation {
         // This is what stops the step-up flash at terrain step-downs and the orphan floating cell
         // that a transiently-risen cell leaves when its base drains away.
         if (amount > FULL && (count == 0 || nSurf[0] >= (y + 1) * FULL)) {
-            // Confined: a real basin/hole layer is saturated, so rise into the cell above.
-            long above = BlockPos.asLong(x, y + 1, z);
-            if (y + 1 < level.getMaxBuildHeight() && canOccupy(level, above) && !isWater(level, above)) {
-                addLevel(level, above, amount - FULL, maxCells);
-                moved = true;
+            // Locally confined. Before rising, SEEK a downhill drop within SLOPE_FIND blocks: if
+            // lava could run off this flat somewhere, push the excess that way (priming the path)
+            // instead of doming up. Only a genuinely enclosed spot — a real crater or basin — rises.
+            // This is the FlowingFluids "look for a drop up to N away" idea, and it is what lets a
+            // shield summit shed its pond down the flanks rather than stack a step-tower at the vent.
+            Direction run = seekDrop(level, x, y, z);
+            if (run != null) {
+                long n = BlockPos.asLong(x + run.getStepX(), y, z + run.getStepZ());
+                int move = Math.min(amount - FULL, FULL - existingLevel(level, n));
+                if (move > 0) {
+                    addLevel(level, n, move, maxCells);
+                    amount -= move;
+                    moved = true;
+                }
+                setLevel(level, pos, amount, maxCells); // hold any remainder; drains toward the drop
+            } else {
+                long above = BlockPos.asLong(x, y + 1, z);
+                if (y + 1 < level.getMaxBuildHeight() && canOccupy(level, above) && !isWater(level, above)) {
+                    addLevel(level, above, amount - FULL, maxCells);
+                    moved = true;
+                }
+                setLevel(level, pos, FULL, maxCells); // rose, or sealed under a ceiling (excess lost)
             }
-            setLevel(level, pos, FULL, maxCells); // rose, or sealed under a ceiling (excess lost)
         } else if (amount != levels.get(pos)) {
             // Otherwise hold whatever remains — a ≤FULL settled level, or (on a slope/ledge with a
             // downhill escape) an over-full amount that renders as a full block and drains downhill
@@ -361,25 +381,87 @@ public final class LavaSimulation {
         int floor = Math.max(level.getMinBuildHeight(), yStart - MAX_DROP);
         for (int yy = yStart; yy > floor; yy--) {
             long here = BlockPos.asLong(nx, yy, nz);
-            if (levels.get(here) > 0) {
-                return here; // rests in lava already in this column (stacks up to FULL)
+            if (existingLevel(level, here) > 0) {
+                return here; // merge into lava — or a PARTIAL basalt layer — already in this cell
             }
             long below = BlockPos.asLong(nx, yy - 1, nz);
-            if (levels.get(below) > 0 || isWall(level, below)) {
-                return here; // empty cell supported by lava/ground below — rest here
+            int belowLvl = existingLevel(level, below);
+            if (belowLvl >= FULL || isWall(level, below)) {
+                return here; // full support below (rock, full lava, full basalt) — rest on top
+            }
+            if (belowLvl > 0) {
+                return below; // partial lava/basalt below — fall in and top it up, don't float above
             }
         }
         return NO_LANDING; // a long drop: let gravity fall a proper column from the same-Y cell
     }
 
-    private int surfaceOf(long cell) {
-        return BlockPos.getY(cell) * FULL + levels.get(cell);
+    private int surfaceOf(Level level, long cell) {
+        return BlockPos.getY(cell) * FULL + existingLevel(level, cell);
+    }
+
+    /**
+     * Scans each horizontal direction up to {@link #SLOPE_FIND} cells for genuinely lower ground
+     * and returns the direction toward the steepest drop found, or {@code null} if this spot is
+     * truly enclosed (a real basin). Lets lava on a flat run toward a downhill edge instead of
+     * piling up — the runniness the shield summit needs to shed its pond down the flanks.
+     */
+    private Direction seekDrop(Level level, int x, int y, int z) {
+        Direction best = null;
+        int bestDrop = 0;
+        for (Direction dir : Direction.Plane.HORIZONTAL) {
+            for (int dist = 1; dist <= SLOPE_FIND; dist++) {
+                int nx = x + dir.getStepX() * dist, nz = z + dir.getStepZ() * dist;
+                if (isWall(level, BlockPos.asLong(nx, y, nz))) {
+                    break; // blocked this way
+                }
+                long land = landingCell(level, nx, y, nz);
+                int landY = land == NO_LANDING ? y - MAX_DROP : BlockPos.getY(land);
+                if (landY < y) {
+                    int drop = y - landY;
+                    if (drop > bestDrop) {
+                        bestDrop = drop;
+                        best = dir;
+                    }
+                    break; // found the drop in this direction
+                }
+                if (landY > y) {
+                    break; // uphill — stop scanning this way
+                }
+                // landY == y: flat continues, keep looking further
+            }
+        }
+        return best;
+    }
+
+    /**
+     * The lava this cell already holds: a live simulation level, or — so new lava merges with an
+     * old flow instead of floating on top of it — the layer count of a <em>partial</em> layered
+     * basalt block that has cooled here. A full basalt block is solid rock (a wall), not this.
+     */
+    private int existingLevel(Level level, long pos) {
+        if (levels.containsKey(pos)) {
+            return levels.get(pos);
+        }
+        BlockPos bp = BlockPos.of(pos);
+        if (level.isLoaded(bp)) {
+            BlockState s = level.getBlockState(bp);
+            if (s.is(TephraBlocks.LAYERED_BASALT.get())) {
+                int layers = s.getValue(LayeredBasaltBlock.LAYERS);
+                if (layers < FULL) {
+                    return layers; // partial basalt: mergeable
+                }
+            }
+        }
+        return 0;
     }
 
     // --- Cell mutation -------------------------------------------------------------------
 
     private void addLevel(Level level, long pos, int delta, int maxCells) {
-        setLevel(level, pos, levels.get(pos) + delta, maxCells);
+        // Seed from any partial basalt already here so its volume is preserved as it remelts into
+        // the flow, rather than being overwritten and the new lava floating on top.
+        setLevel(level, pos, existingLevel(level, pos) + delta, maxCells);
     }
 
     /** Sets a cell's level, keeping the active/dirty/registry bookkeeping in sync. */
@@ -459,6 +541,11 @@ public final class LavaSimulation {
         BlockState s = level.getBlockState(pos);
         if (s.is(Blocks.BEDROCK) || s.is(TephraBlocks.VOLCANO_CORE.get())) {
             return false;
+        }
+        if (s.is(TephraBlocks.LAYERED_BASALT.get())) {
+            // A partial basalt layer can be re-entered and topped up so new lava merges with the
+            // old flow; a full layered block is solid rock lava rests on top of.
+            return s.getValue(LayeredBasaltBlock.LAYERS) < FULL;
         }
         return s.isAir() || s.canBeReplaced()
                 || s.is(net.minecraft.tags.BlockTags.LOGS) || s.is(net.minecraft.tags.BlockTags.LEAVES);
