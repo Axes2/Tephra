@@ -5,11 +5,9 @@ import com.axes.tephra.block.TephraBlocks;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.world.entity.Entity;
-import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.level.material.FlowingFluid;
 import net.minecraft.world.level.material.Fluid;
-import net.minecraft.world.level.material.FluidState;
 import net.minecraft.world.level.pathfinder.PathType;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.bus.api.IEventBus;
@@ -73,12 +71,8 @@ public class TephraFluids {
                             vec3.y + (double) (vec3.y < (double) 0.06F ? 5.0E-4F : 0.0F),
                             vec3.z * (double) 0.95F);
                 }
-
-                @Override
-                public boolean move(FluidState state, LivingEntity entity, Vec3 movementVector, double gravity) {
-                    // Returning true opts out of the generic water-swimming movement path.
-                    return true;
-                }
+                // NOTE: no move() override — molten basalt uses vanilla lava's entity movement,
+                // so players can still wade/climb out slowly instead of being frozen in place.
             });
 
     public static final DeferredHolder<Fluid, FlowingFluid> MOLTEN_BASALT =

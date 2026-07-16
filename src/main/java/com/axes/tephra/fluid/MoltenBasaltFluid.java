@@ -59,6 +59,22 @@ public abstract class MoltenBasaltFluid extends BaseFlowingFluid {
         cool(level, pos, state, random);
     }
 
+    /**
+     * Scheduled fluid tick. Vanilla would let trailing lava that has lost its feed recede and
+     * vanish, leaving bare holes in a hardened flow. Instead, the moment a flowing cell is no
+     * longer fed we freeze it into rock in place, so flows harden thoroughly with no gaps.
+     * Fed lava (a live channel) and protected vents/fronts keep flowing via vanilla.
+     */
+    @Override
+    public void tick(Level level, BlockPos pos, FluidState state) {
+        if (!state.isSource() && !LavaFlowEngine.isProtected(level, pos)
+                && !isFed(level, pos, state.getAmount())) {
+            freeze(level, pos, state, state.getAmount());
+            return;
+        }
+        super.tick(level, pos, state);
+    }
+
     // --- COOLING: how settled lava becomes permanent volcanic rock ---
 
     private void cool(Level level, BlockPos pos, FluidState state, RandomSource random) {
@@ -116,10 +132,12 @@ public abstract class MoltenBasaltFluid extends BaseFlowingFluid {
     }
 
     private void freeze(Level level, BlockPos pos, FluidState state, int amount) {
-        // Deep/pooled cells build up as full molten cinder (glows, ages to solid rock, grows
-        // the edifice); thin flowing margins leave a ragged layered-basalt skin at flow height.
+        // Full-height lava (sources and falling curtains) builds up as molten cinder — glows,
+        // ages to solid rock, grows the edifice. Every partial-height flowing cell hardens
+        // into layered basalt matching its exact fluid height, so shallow flows always leave
+        // consistent basalt layers instead of draining away and exposing the ground beneath.
         BlockState result;
-        if (state.isSource() || state.getValue(FALLING) || amount >= 5) {
+        if (state.isSource() || state.getValue(FALLING)) {
             result = TephraBlocks.MOLTEN_CINDER.get().defaultBlockState();
         } else {
             result = TephraBlocks.LAYERED_BASALT.get().defaultBlockState()

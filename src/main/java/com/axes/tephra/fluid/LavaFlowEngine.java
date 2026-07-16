@@ -5,6 +5,8 @@ import com.axes.tephra.block.VolcanoCoreBlockEntity;
 import com.axes.tephra.config.TephraConfig;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.tags.BlockTags;
+import net.minecraft.tags.FluidTags;
 import net.minecraft.util.RandomSource;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Blocks;
@@ -13,7 +15,6 @@ import net.minecraft.world.level.block.state.BlockState;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
-import java.util.List;
 import java.util.Map;
 import java.util.WeakHashMap;
 
@@ -92,11 +93,12 @@ public final class LavaFlowEngine {
                 be.removeFlowHead(head); // head got buried, crusted, or unloaded
                 continue;
             }
-            Targets targets = bestTargets(level, head);
-            if (targets.primary() == null) {
+            Targets targets = bestTargets(level, head, random);
+            BlockPos primary = targets.primary();
+            if (primary == null) {
                 // No downhill or flat opening: the head sits in a basin. Raise the pool one
                 // level so it can fill and eventually spill over the lowest rim; if it can't
-                // rise (open ground or an overhang), retire it to cool where it pooled.
+                // rise (only allowed against a real rim), retire it to cool where it pooled.
                 BlockPos up = riseTarget(level, head);
                 be.removeFlowHead(head);
                 if (up != null) {
@@ -107,19 +109,39 @@ public final class LavaFlowEngine {
                 continue;
             }
 
+            if (touchesWater(level, primary)) {
+                // The flow has met water. Quench a block of new land into the lake but keep
+                // the head parked on the shore so it keeps pushing the delta outward, filling
+                // the water from the bed up instead of dying at the water's edge.
+                solidifyLand(level, primary);
+                protect(level, head, until);
+                continue;
+            }
+
             be.removeFlowHead(head);
-            placeSource(level, targets.primary());
-            be.addFlowHead(targets.primary());
-            protect(level, targets.primary(), until);
+            advanceTo(level, be, primary, until);
 
             // Occasionally split into a second lobe so flows fan out naturally.
             if (targets.secondary() != null && be.getFlowHeads().size() < maxHeads
                     && random.nextDouble() < branchChance) {
-                placeSource(level, targets.secondary());
-                be.addFlowHead(targets.secondary());
-                protect(level, targets.secondary(), until);
+                advanceTo(level, be, targets.secondary(), until);
             }
         }
+    }
+
+    /**
+     * Extends a flow onto {@code target}. On dry ground this lays a molten source and keeps a
+     * head there; where the cell meets water the lava quenches into permanent land instead,
+     * so flows entering a lake build solid ground rather than skating a thin sheet across it.
+     */
+    private static void advanceTo(Level level, VolcanoCoreBlockEntity be, BlockPos target, long until) {
+        if (touchesWater(level, target)) {
+            solidifyLand(level, target);
+            return;
+        }
+        placeSource(level, target);
+        be.addFlowHead(target);
+        protect(level, target, until);
     }
 
     /** Tops the head count back up by overflowing each vent toward its lowest rim. */
@@ -135,27 +157,33 @@ public final class LavaFlowEngine {
             if (!level.isLoaded(vent)) {
                 continue;
             }
-            BlockPos overflow = bestTargets(level, vent).primary();
+            BlockPos overflow = bestTargets(level, vent, random).primary();
             if (overflow != null && !isMoltenBasalt(level, overflow)) {
-                placeSource(level, overflow);
-                be.addFlowHead(overflow);
-                protect(level, overflow, until);
+                advanceTo(level, be, overflow, until);
             }
         }
     }
 
+    // A single fixed order would make flat flows always creep the same compass direction, so
+    // scans start from a random side each call; ties then resolve to a random neighbour and
+    // flows meander naturally instead of running in straight lines.
+    private static final Direction[] HORIZONTALS =
+            {Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST};
+
     /**
      * The two lowest open cells lava could flow into from {@code from} (never uphill, never
      * back into existing lava). {@code primary} is the steepest descent; {@code secondary}
-     * seeds branching.
+     * seeds branching. Scan order is randomised so flat flows spread organically.
      */
-    private static Targets bestTargets(Level level, BlockPos from) {
+    private static Targets bestTargets(Level level, BlockPos from, RandomSource random) {
         BlockPos best = null;
         BlockPos second = null;
         int bestY = Integer.MAX_VALUE;
         int secondY = Integer.MAX_VALUE;
 
-        for (Direction dir : Direction.Plane.HORIZONTAL) {
+        int start = random.nextInt(HORIZONTALS.length);
+        for (int i = 0; i < HORIZONTALS.length; i++) {
+            Direction dir = HORIZONTALS[(start + i) % HORIZONTALS.length];
             BlockPos neighbor = from.relative(dir);
             if (!level.isLoaded(neighbor) || !passable(level, neighbor) || isMoltenBasalt(level, neighbor)) {
                 continue;
@@ -180,17 +208,18 @@ public final class LavaFlowEngine {
 
     /**
      * The cell a parcel of lava entering column ({@code x},{@code z}) at {@code startY} comes
-     * to rest in: it falls through open air until it settles on the first support — solid rock
-     * <b>or existing liquid</b>. Resting on liquid is what lets pools stack up and eventually
-     * overflow their rim, instead of the flow sinking back through its own lava. Returns
-     * {@code null} if the column drops away into the void within {@link #MAX_FALL}.
+     * to rest in: it falls through open air <b>and through water</b> until it settles on the
+     * first support — solid rock or existing lava. Resting on lava lets pools stack up and
+     * overflow their rim; sinking through water lets flows reach a lake bed and fill it from
+     * the bottom instead of skating the surface. Returns {@code null} if the column drops
+     * into the void within {@link #MAX_FALL}.
      */
     private static BlockPos landing(Level level, int x, int z, int startY) {
         BlockPos.MutableBlockPos probe = new BlockPos.MutableBlockPos(x, startY, z);
         int floor = Math.max(level.getMinBuildHeight() + 1, startY - MAX_FALL);
         while (probe.getY() > floor) {
-            if (!openAir(level, probe)) {
-                // Support at this Y (solid or liquid); lava rests one above, if that is open.
+            if (restsOn(level, probe)) {
+                // Support at this Y (solid or lava); lava rests one above, if that is open.
                 BlockPos rest = new BlockPos(x, probe.getY() + 1, z);
                 return passable(level, rest) ? rest : null;
             }
@@ -200,18 +229,24 @@ public final class LavaFlowEngine {
     }
 
     /**
-     * The cell directly above a pooled head, if the pool can still rise. We only reach here
-     * when the head has no downhill or flat opening — every side is a wall or more lava — so
-     * it is genuinely enclosed in a basin; raising it stacks the pool toward its rim. On open
-     * ground a head always has a flat opening and never gets here, so this never towers.
-     * Returns null under an overhang or at the build ceiling.
+     * The cell directly above a pooled head, but only when a genuine solid rim contains it.
+     * We reach here only with no downhill or flat opening; requiring at least one solid wall
+     * beside the head means lava rises solely to fill and overflow a real basin — never to
+     * climb in the open, over its own pool on flat ground, or up a lone tree. Returns null
+     * with no such rim, under an overhang, or at the build ceiling.
      */
     private static BlockPos riseTarget(Level level, BlockPos head) {
         BlockPos up = head.above();
         if (up.getY() >= level.getMaxBuildHeight() || !passable(level, up)) {
             return null;
         }
-        return up;
+        for (int i = 0; i < HORIZONTALS.length; i++) {
+            BlockPos side = head.relative(HORIZONTALS[i]);
+            if (isWall(level, side)) {
+                return up; // a solid rim actually confines the lava at this level
+            }
+        }
+        return null;
     }
 
     /** Places a molten basalt source, letting the vanilla engine spread/render it locally. */
@@ -221,26 +256,54 @@ public final class LavaFlowEngine {
         }
     }
 
-    /** A cell lava may occupy or flow through: air or any replaceable block (never bedrock). */
+    /** Quenches lava on contact with water into permanent land, displacing the water. */
+    private static void solidifyLand(Level level, BlockPos pos) {
+        if (level.isLoaded(pos) && (passable(level, pos) || isWater(level, pos))) {
+            level.setBlockAndUpdate(pos, TephraBlocks.MOLTEN_CINDER.get().defaultBlockState());
+        }
+    }
+
+    /**
+     * A cell lava may occupy or flow through: air, any replaceable block, or vegetation
+     * (logs/leaves burn away). Solid rock, bedrock and the core are barriers.
+     */
     private static boolean passable(Level level, BlockPos pos) {
         BlockState s = level.getBlockState(pos);
         if (s.is(Blocks.BEDROCK) || s.is(TephraBlocks.VOLCANO_CORE.get())) {
             return false;
         }
-        return s.isAir() || s.canBeReplaced();
+        return s.isAir() || s.canBeReplaced() || s.is(BlockTags.LOGS) || s.is(BlockTags.LEAVES);
     }
 
-    /** Air (or an open, replaceable, non-fluid cell) — the space a falling parcel drops through. */
-    private static boolean openAir(Level level, BlockPos pos) {
-        BlockState s = level.getBlockState(pos);
-        if (s.is(Blocks.BEDROCK) || s.is(TephraBlocks.VOLCANO_CORE.get())) {
-            return false;
-        }
-        return (s.isAir() || s.canBeReplaced()) && s.getFluidState().isEmpty();
+    /** A solid barrier lava cannot enter and can be contained by — the rim of a basin. */
+    private static boolean isWall(Level level, BlockPos pos) {
+        return level.isLoaded(pos) && !passable(level, pos) && !isMoltenBasalt(level, pos);
+    }
+
+    /** A cell lava comes to rest on top of: solid rock/bedrock, or existing lava (pools stack). */
+    private static boolean restsOn(Level level, BlockPos pos) {
+        return isMoltenBasalt(level, pos) || (!passable(level, pos) && !isWater(level, pos));
     }
 
     private static boolean isMoltenBasalt(Level level, BlockPos pos) {
         return level.getBlockState(pos).is(TephraBlocks.MOLTEN_BASALT_BLOCK.get());
+    }
+
+    private static boolean isWater(Level level, BlockPos pos) {
+        return level.getBlockState(pos).getFluidState().is(FluidTags.WATER);
+    }
+
+    /** True when {@code pos} or any of its six neighbours holds water — the quench trigger. */
+    private static boolean touchesWater(Level level, BlockPos pos) {
+        if (isWater(level, pos)) {
+            return true;
+        }
+        for (Direction dir : Direction.values()) {
+            if (isWater(level, pos.relative(dir))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     // --- protection registry: cells the cooling rule must leave molten ---
