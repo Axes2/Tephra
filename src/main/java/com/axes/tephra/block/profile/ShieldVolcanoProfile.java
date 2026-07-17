@@ -1,6 +1,5 @@
 package com.axes.tephra.block.profile;
 
-import com.axes.tephra.block.FlowingLavaBlock;
 import com.axes.tephra.block.LayeredBasaltBlock;
 import com.axes.tephra.block.TephraBlocks;
 import com.axes.tephra.block.VolcanoCoreBlockEntity;
@@ -8,16 +7,28 @@ import com.axes.tephra.block.VolcanoPhase;
 import com.axes.tephra.config.TephraConfig;
 import com.axes.tephra.registry.TephraParticleTypes;
 import net.minecraft.core.BlockPos;
-import net.minecraft.core.Direction;
 import net.minecraft.util.RandomSource;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.levelgen.Heightmap;
+import net.minecraft.world.level.material.FluidState;
 
-import java.util.Iterator;
-import java.util.List;
 import java.util.ArrayList;
+import java.util.List;
 
+/**
+ * Shield volcanoes erupt effusively: a ponded lava lake sits in a shallow summit depression and
+ * overflows the lowest rim; {@code LavaSimulation} carries the flow down the flanks.
+ *
+ * <p>Critical anti-tower rule: the vent is seated at a <b>stable bowl-floor Y</b> derived from
+ * the rim average, never on top of the heightmap / lava pile. Molten and volcanic fill above that
+ * seat are cleared each refresh so injection cannot climb.
+ */
 public class ShieldVolcanoProfile implements VolcanoProfile {
+
+    private static final int POND_REFRESH_INTERVAL = 40;
+    private static final int BOWL_DEPTH = 2;
 
     @Override
     public int getPhaseDurationTicks(VolcanoPhase phase, RandomSource random, int defaultTarget) {
@@ -32,7 +43,9 @@ public class ShieldVolcanoProfile implements VolcanoProfile {
     @Override
     public void tickClient(Level level, BlockPos pos, BlockState state, VolcanoPhase phase, VolcanoCoreBlockEntity blockEntity) {
         if (phase == VolcanoPhase.ERUPTING) {
-            BlockPos ventPos = pos.above(blockEntity.getPlumeHeight());
+            BlockPos ventPos = blockEntity.getVentSources().isEmpty()
+                    ? pos.above(Math.max(1, blockEntity.getPlumeHeight()))
+                    : blockEntity.getVentSources().iterator().next();
 
             for (int i = 0; i < 50; i++) {
                 double radius = level.random.nextDouble() * 3;
@@ -65,7 +78,7 @@ public class ShieldVolcanoProfile implements VolcanoProfile {
             float intensity = blockEntity.getEruptionIntensity();
             if (intensity <= 0) intensity = 1.0f;
 
-            if (level.getGameTime() % Math.max(15, (int)(45 / intensity)) == 0) {
+            if (level.getGameTime() % Math.max(15, (int) (45 / intensity)) == 0) {
                 level.playSound(null, pos, com.axes.tephra.sound.TephraSounds.VOLCANO_ERUPT.get(),
                         net.minecraft.sounds.SoundSource.BLOCKS, 12.0f * intensity, 0.45f + level.random.nextFloat() * 0.3f);
             }
@@ -74,296 +87,175 @@ public class ShieldVolcanoProfile implements VolcanoProfile {
                         net.minecraft.sounds.SoundSource.BLOCKS, 1.5f, 0.4f + level.random.nextFloat() * 0.4f);
             }
 
-            if (level.getGameTime() % 20 == 0) {
-                BlockPos ventPos = pos.above(blockEntity.getPlumeHeight());
+            boolean needsVent = blockEntity.getVentSources().isEmpty();
+            if (needsVent || level.getGameTime() % POND_REFRESH_INTERVAL == 0) {
+                maintainSummitBasin(level, pos, blockEntity);
+            }
+        } else if (phase == VolcanoPhase.RECOVERY) {
+            if (level.getGameTime() % POND_REFRESH_INTERVAL == 0) {
+                refineSummitDepression(level, pos, blockEntity);
+            }
+        }
+    }
 
-                int offsetX = (level.random.nextInt(9) - 4);
-                int offsetZ = (level.random.nextInt(9) - 4);
+    private void maintainSummitBasin(Level level, BlockPos corePos, VolcanoCoreBlockEntity blockEntity) {
+        float radius = Math.max(3.0f, Math.min(8.0f, blockEntity.getCraterBaseRadius() * 0.35f));
+        Integer rimTop = ringRimTop(level, corePos, radius);
+        if (rimTop == null) {
+            return;
+        }
 
-                if (offsetX * offsetX + offsetZ * offsetZ <= 16) {
-                    BlockPos spawnPos = ventPos.offset(offsetX, 0, offsetZ);
-                    Direction randomDir = Direction.Plane.HORIZONTAL.getRandomDirection(level.random);
-                    blockEntity.activeFlows.add(new LavaPacket(findSurfaceBelow(level, spawnPos), 960, randomDir));
+        int minFloor = corePos.getY() + 1;
+        int bowlFloorTop = Math.max(minFloor, rimTop - BOWL_DEPTH);
+
+        shaveVolcanicFill(level, corePos, radius, bowlFloorTop, false);
+        seatVent(level, corePos, bowlFloorTop, blockEntity);
+    }
+
+    private void refineSummitDepression(Level level, BlockPos corePos, VolcanoCoreBlockEntity blockEntity) {
+        float radius = Math.max(3.0f, Math.min(8.0f, blockEntity.getCraterBaseRadius() * 0.35f));
+        Integer rimTop = ringRimTop(level, corePos, radius);
+        if (rimTop == null) {
+            return;
+        }
+        int minFloor = corePos.getY() + 1;
+        int bowlFloorTop = Math.max(minFloor, rimTop - BOWL_DEPTH);
+        shaveVolcanicFill(level, corePos, radius, bowlFloorTop, true);
+    }
+
+    private Integer ringRimTop(Level level, BlockPos corePos, float radius) {
+        int cx = corePos.getX(), cz = corePos.getZ();
+        long sum = 0;
+        int count = 0;
+        for (int i = 0; i < 8; i++) {
+            double a = i * Math.PI / 4.0;
+            int x = cx + (int) Math.round(Math.cos(a) * radius);
+            int z = cz + (int) Math.round(Math.sin(a) * radius);
+            if (!level.isLoaded(new BlockPos(x, corePos.getY(), z))) {
+                return null;
+            }
+            sum += topSolidY(level, x, z);
+            count++;
+        }
+        return count == 0 ? null : (int) Math.round((double) sum / count);
+    }
+
+    /**
+     * Shaves volcanic accretion only (never natural terrain) down toward a shallow bowl profile.
+     */
+    private void shaveVolcanicFill(Level level, BlockPos corePos, float radius, int bowlFloorTop, boolean clearLava) {
+        int cx = corePos.getX(), cz = corePos.getZ();
+        int r = (int) Math.ceil(radius);
+        for (int dx = -r; dx <= r; dx++) {
+            for (int dz = -r; dz <= r; dz++) {
+                double dist = Math.sqrt(dx * dx + dz * dz);
+                if (dist > radius) {
+                    continue;
+                }
+                int x = cx + dx, z = cz + dz;
+                if (!level.isLoaded(new BlockPos(x, corePos.getY(), z))) {
+                    continue;
+                }
+                double ratio = radius <= 0 ? 0 : dist / radius;
+                int desiredTop = bowlFloorTop + (int) Math.round(BOWL_DEPTH * ratio * ratio);
+                int top = topSolidY(level, x, z);
+                while (top > desiredTop) {
+                    BlockPos p = new BlockPos(x, top, z);
+                    BlockState s = level.getBlockState(p);
+                    if (!isVolcanicFill(s, clearLava)) {
+                        break;
+                    }
+                    // Keep the pond cell itself while erupting.
+                    if (!clearLava && dx == 0 && dz == 0 && top == desiredTop + 1
+                            && s.is(TephraBlocks.MOLTEN_BASALT_BLOCK.get())) {
+                        break;
+                    }
+                    level.setBlockAndUpdate(p, Blocks.AIR.defaultBlockState());
+                    top--;
                 }
             }
         }
-
-        tickFluidPhysics(level, pos, blockEntity);
     }
 
-    // --- EFFUSIVE VIRTUAL LAVA AGENT ALGORITHM ---
+    /**
+     * Seats the pond at a fixed bowl-floor height from rim sampling — never on a lava/solid tower.
+     */
+    private void seatVent(Level level, BlockPos corePos, int bowlFloorTop, VolcanoCoreBlockEntity blockEntity) {
+        int floorY = Math.max(corePos.getY() + 1, bowlFloorTop);
+        BlockPos floorPos = new BlockPos(corePos.getX(), floorY, corePos.getZ());
+        BlockPos ventPos = floorPos.above();
+        if (!level.isLoaded(ventPos)) {
+            return;
+        }
 
-    private void simulateSprawlingLavaAgent(Level level, BlockPos start, RandomSource random) {
-        BlockPos current = findSurfaceBelow(level, start);
-        int volumeLayers = 192;
-        int maxSteps = 400;
-
-        int steps = 0;
-        while (volumeLayers > 0 && steps < maxSteps) {
-            double currentHeight = getExactSurfaceHeight(level, current);
-
-            double minHeight = Double.MAX_VALUE;
-            List<BlockPos> lowestNeighbors = new ArrayList<>();
-
-            for (Direction dir : Direction.Plane.HORIZONTAL) {
-                BlockPos neighbor = findSurfaceBelow(level, current.relative(dir));
-                double h = getExactSurfaceHeight(level, neighbor);
-
-                if (h < minHeight) {
-                    minHeight = h;
-                    lowestNeighbors.clear();
-                    lowestNeighbors.add(neighbor);
-                } else if (h == minHeight) {
-                    lowestNeighbors.add(neighbor);
-                }
+        // Collapse molten sim cells + clear volcanic fill above the seat (anti-tower).
+        blockEntity.getLavaSimulation().clearColumnAbove(level, ventPos.getX(), ventPos.getY(), ventPos.getZ());
+        for (int y = ventPos.getY() + 1; y <= ventPos.getY() + 48; y++) {
+            BlockPos p = new BlockPos(ventPos.getX(), y, ventPos.getZ());
+            if (!level.isLoaded(p)) {
+                break;
             }
+            BlockState s = level.getBlockState(p);
+            if (isVolcanicFill(s, true)) {
+                level.setBlockAndUpdate(p, Blocks.AIR.defaultBlockState());
+            } else if (!s.isAir() && !s.canBeReplaced()) {
+                break;
+            }
+        }
 
-            if (minHeight > currentHeight) {
-                int layersNeededToFill = (int) Math.ceil((minHeight - currentHeight) * 16.0);
-                int layersToDeposit = Math.min(volumeLayers, layersNeededToFill);
+        if (floorPos.getY() > corePos.getY()) {
+            BlockState floorState = level.getBlockState(floorPos);
+            if (floorState.isAir() || floorState.canBeReplaced()
+                    || floorState.is(TephraBlocks.MOLTEN_BASALT_BLOCK.get())) {
+                level.setBlockAndUpdate(floorPos, TephraBlocks.LAYERED_BASALT.get().defaultBlockState()
+                        .setValue(LayeredBasaltBlock.LAYERS, 8));
+            }
+        }
 
-                current = depositVolumetricLava(level, current, layersToDeposit);
-                volumeLayers -= layersToDeposit;
-
-            } else if (minHeight == currentHeight) {
-                int viscosityLimit = 3;
-
-                if (volumeLayers >= viscosityLimit) {
-                    current = depositVolumetricLava(level, current, viscosityLimit);
-                    volumeLayers -= viscosityLimit;
-                    current = lowestNeighbors.get(random.nextInt(lowestNeighbors.size()));
-                } else {
-                    depositVolumetricLava(level, current, volumeLayers);
-                    volumeLayers = 0;
-                }
-
+        BlockState cur = level.getBlockState(ventPos);
+        if (!cur.isAir() && !cur.canBeReplaced() && !cur.is(TephraBlocks.MOLTEN_BASALT_BLOCK.get())) {
+            if (isVolcanicFill(cur, true)) {
+                level.setBlockAndUpdate(ventPos, Blocks.AIR.defaultBlockState());
             } else {
-                // SCENARIO C: DOWNHILL (Local Variable Version)
-                BlockPos targetBottom = lowestNeighbors.get(random.nextInt(lowestNeighbors.size()));
-                int ledgeY = current.getY();
-                int bottomY = targetBottom.getY();
-
-                if (ledgeY > bottomY + 1) {
-                    int startY = (volumeLayers > 10) ? ledgeY : ledgeY - 1;
-
-                    for (int y = startY; y > bottomY; y--) {
-                        BlockPos cascadePos = new BlockPos(targetBottom.getX(), y, targetBottom.getZ());
-                        BlockState cascadeState = level.getBlockState(cascadePos);
-
-                        if (cascadeState.is(TephraBlocks.FLOWING_LAVA.get()) && cascadeState.getValue(FlowingLavaBlock.FALLING)) {
-                            continue;
-                        }
-
-                        if (cascadeState.canBeReplaced() || cascadeState.isAir()) {
-                            level.setBlock(cascadePos, TephraBlocks.FLOWING_LAVA.get().defaultBlockState().setValue(FlowingLavaBlock.FALLING, true), 18);
-                        }
-                    }
-                }
-
-                current = depositVolumetricLava(level, current, 1);
-                volumeLayers -= 1;
-                current = targetBottom;
+                return;
             }
-            steps++;
         }
+        FluidState curFluid = level.getBlockState(ventPos).getFluidState();
+        boolean liveSource = level.getBlockState(ventPos).is(TephraBlocks.MOLTEN_BASALT_BLOCK.get()) && curFluid.isSource();
+        if (!liveSource) {
+            level.setBlockAndUpdate(ventPos, TephraBlocks.MOLTEN_BASALT_BLOCK.get().defaultBlockState());
+        }
+
+        List<BlockPos> tracked = new ArrayList<>(blockEntity.getVentSources());
+        for (BlockPos p : tracked) {
+            if (!p.equals(ventPos)) {
+                blockEntity.untrackVentSource(p);
+            }
+        }
+        blockEntity.trackVentSource(ventPos);
+        blockEntity.setPlumeHeight(Math.max(1, ventPos.getY() - corePos.getY()));
     }
 
-    public void tickFluidPhysics(Level level, BlockPos corePos, VolcanoCoreBlockEntity blockEntity) {
-        Iterator<LavaPacket> iterator = blockEntity.activeFlows.iterator();
-
-        while (iterator.hasNext()) {
-            LavaPacket packet = iterator.next();
-
-            if (!level.isLoaded(packet.currentPos)) {
-                iterator.remove();
+    /** Topmost non-molten solid — lava towers do not inflate rim height. */
+    private int topSolidY(Level level, int x, int z) {
+        int top = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x, z) - 1;
+        for (int y = top; y >= level.getMinBuildHeight(); y--) {
+            BlockState s = level.getBlockState(new BlockPos(x, y, z));
+            if (s.is(TephraBlocks.MOLTEN_BASALT_BLOCK.get()) || s.isAir() || s.canBeReplaced()) {
                 continue;
             }
-
-            packet.lifeTimeTicks++;
-
-            if (packet.volumeLayers <= 0 || packet.lifeTimeTicks > 3600) {
-                if (packet.volumeLayers > 0) {
-                    depositVolumetricLava(level, packet.currentPos, Math.min(packet.volumeLayers, 3));
-                }
-                iterator.remove();
-                continue;
-            }
-
-            if (packet.lifeTimeTicks % 6 != 0) {
-                continue;
-            }
-
-            double currentHeight = getExactSurfaceHeight(level, packet.currentPos);
-
-            double minHeight = Double.MAX_VALUE;
-            List<BlockPos> lowestNeighbors = new ArrayList<>();
-
-            for (Direction dir : Direction.Plane.HORIZONTAL) {
-                BlockPos neighbor = findSurfaceBelow(level, packet.currentPos.relative(dir));
-                double h = getExactSurfaceHeight(level, neighbor);
-
-                if (h < minHeight) {
-                    minHeight = h;
-                    lowestNeighbors.clear();
-                    lowestNeighbors.add(neighbor);
-                    packet.momentum = dir;
-                } else if (h == minHeight) {
-                    lowestNeighbors.add(neighbor);
-                }
-            }
-
-            if (minHeight > currentHeight) {
-                int layersNeededToFill = (int) Math.ceil((minHeight - currentHeight) * 16.0);
-                int layersToDeposit = Math.min(packet.volumeLayers, layersNeededToFill);
-
-                packet.currentPos = depositVolumetricLava(level, packet.currentPos, layersToDeposit);
-                packet.volumeLayers -= layersToDeposit;
-
-            } else if (minHeight == currentHeight) {
-                int viscosityLimit = 3;
-
-                if (packet.volumeLayers >= viscosityLimit) {
-                    packet.currentPos = depositVolumetricLava(level, packet.currentPos, viscosityLimit);
-                    packet.volumeLayers -= viscosityLimit;
-
-                    BlockPos forward = findSurfaceBelow(level, packet.currentPos.relative(packet.momentum));
-                    if (lowestNeighbors.contains(forward)) {
-                        packet.currentPos = forward;
-                    } else {
-                        packet.currentPos = lowestNeighbors.get(level.random.nextInt(lowestNeighbors.size()));
-                    }
-                } else {
-                    depositVolumetricLava(level, packet.currentPos, Math.min(packet.volumeLayers, 3));
-                    iterator.remove();
-                }
-
-            } else {
-                // SCENARIO C: DOWNHILL
-                BlockPos targetBottom = lowestNeighbors.get(level.random.nextInt(lowestNeighbors.size()));
-                int ledgeY = packet.currentPos.getY();
-                int bottomY = targetBottom.getY();
-
-                BlockState currentState = level.getBlockState(packet.currentPos);
-                boolean isCurrentlyFalling = currentState.is(TephraBlocks.FLOWING_LAVA.get()) && currentState.getValue(FlowingLavaBlock.FALLING);
-
-                if (isCurrentlyFalling) {
-                    BlockPos directlyBelow = packet.currentPos.below();
-                    BlockPos straightDownSurface = findSurfaceBelow(level, packet.currentPos);
-
-                    if (directlyBelow.getY() > straightDownSurface.getY()) {
-                        // Still mid-air, keep falling
-                        packet.currentPos = directlyBelow;
-                        BlockState belowState = level.getBlockState(directlyBelow);
-                        if (belowState.isAir() || belowState.canBeReplaced()) {
-                            level.setBlock(directlyBelow, TephraBlocks.FLOWING_LAVA.get().defaultBlockState().setValue(FlowingLavaBlock.FALLING, true), 18);
-                        }
-                    } else {
-                        // --- THE SPLASH OVERRIDE ---
-                        // We hit the ground! To eliminate the air gap, we keep the current block as a full FALLING column.
-                        // Instead of depositing under the waterfall, we "splash" the volume horizontally.
-                        BlockPos splashTarget = lowestNeighbors.get(level.random.nextInt(lowestNeighbors.size()));
-
-                        packet.currentPos = depositVolumetricLava(level, splashTarget, 1);
-                        packet.volumeLayers -= 1;
-                    }
-                } else {
-                    // Packet is resting on a horizontal ledge
-                    if (ledgeY > bottomY + 1) {
-                        // TRUE CLIFF: Start a cascade (uses -1 Y offset to blend with the ledge)
-                        int startY = ledgeY - 1;
-                        BlockPos cascadeStart = new BlockPos(targetBottom.getX(), startY, targetBottom.getZ());
-
-                        packet.currentPos = cascadeStart;
-
-                        BlockState cascadeState = level.getBlockState(cascadeStart);
-                        if (cascadeState.isAir() || cascadeState.canBeReplaced()) {
-                            level.setBlock(cascadeStart, TephraBlocks.FLOWING_LAVA.get().defaultBlockState().setValue(FlowingLavaBlock.FALLING, true), 18);
-                        }
-                    } else {
-                        // GENTLE SLOPE: Standard 1-block drop, no pillars!
-                        packet.currentPos = depositVolumetricLava(level, packet.currentPos, 1);
-                        packet.volumeLayers -= 1;
-
-                        packet.currentPos = targetBottom;
-
-                        // Lateral spreading
-                        if (packet.volumeLayers > 5 && level.random.nextFloat() < 0.40f) {
-                            BlockPos sideNeighbor = lowestNeighbors.get(level.random.nextInt(lowestNeighbors.size()));
-                            depositVolumetricLava(level, sideNeighbor, 1);
-                            packet.volumeLayers -= 1;
-                        }
-                    }
-                }
-            }
+            return y;
         }
+        return top;
     }
 
-
-    private BlockPos findSurfaceBelow(Level level, BlockPos pos) {
-        BlockPos search = pos.above(2);
-        while (search.getY() > level.getMinBuildHeight()) {
-            BlockState state = level.getBlockState(search);
-            boolean isFallingLava = state.is(TephraBlocks.FLOWING_LAVA.get()) && state.getValue(FlowingLavaBlock.FALLING);
-
-            // If the block is NOT falling lava, check if it's solid or a horizontal pool
-            if (!isFallingLava) {
-                if (state.is(TephraBlocks.FLOWING_LAVA.get()) ||
-                        state.is(TephraBlocks.LAYERED_BASALT.get()) ||
-                        !state.getCollisionShape(level, search).isEmpty()) {
-                    return search;
-                }
-            }
-            search = search.below(); // Plunge straight through waterfalls!
+    private boolean isVolcanicFill(BlockState s, boolean includeLava) {
+        if (s.is(TephraBlocks.MOLTEN_CINDER.get())
+                || s.is(TephraBlocks.SOLID_CINDER.get())
+                || s.is(TephraBlocks.LAYERED_BASALT.get())
+                || s.is(TephraBlocks.ASH_LAYER.get())) {
+            return true;
         }
-        return new BlockPos(pos.getX(), level.getMinBuildHeight(), pos.getZ());
-    }
-
-    private double getExactSurfaceHeight(Level level, BlockPos pos) {
-        BlockState state = level.getBlockState(pos);
-        if (state.is(TephraBlocks.FLOWING_LAVA.get())) {
-            return pos.getY() + (state.getValue(FlowingLavaBlock.LAYERS) / 16.0);
-        } else if (state.is(TephraBlocks.LAYERED_BASALT.get())) {
-            return pos.getY() + (state.getValue(LayeredBasaltBlock.LAYERS) / 8.0);
-        }
-        return pos.getY() + 1.0;
-    }
-
-    private BlockPos depositVolumetricLava(Level level, BlockPos pos, int layersToAdd) {
-        if (layersToAdd <= 0) return pos;
-
-        BlockState state = level.getBlockState(pos);
-        int flags = 18;
-        int currentLavaLayers = 0;
-
-        if (state.is(TephraBlocks.FLOWING_LAVA.get())) {
-            if (state.getValue(FlowingLavaBlock.FALLING)) {
-                // CRITICAL FIX: If you try to add layers to a waterfall, instantly slide the volume down!
-                return depositVolumetricLava(level, pos.below(), layersToAdd);
-            }
-            currentLavaLayers = state.getValue(FlowingLavaBlock.LAYERS);
-        } else if (state.is(TephraBlocks.LAYERED_BASALT.get())) {
-            currentLavaLayers = state.getValue(LayeredBasaltBlock.LAYERS) * 2;
-        } else {
-            if (!state.canBeReplaced() && !state.isAir()) {
-                pos = pos.above();
-                state = level.getBlockState(pos);
-                if (!state.canBeReplaced() && !state.isAir()) return pos;
-            }
-
-            if (state.canBeReplaced() && !state.isAir()) {
-                level.destroyBlock(pos, true);
-            }
-        }
-
-        int newTotalLayers = currentLavaLayers + layersToAdd;
-
-        if (newTotalLayers <= 16) {
-            level.setBlock(pos, TephraBlocks.FLOWING_LAVA.get().defaultBlockState().setValue(FlowingLavaBlock.LAYERS, newTotalLayers), flags);
-            return pos;
-        } else {
-            level.setBlock(pos, TephraBlocks.MOLTEN_CINDER.get().defaultBlockState(), flags);
-            int overflowLayers = newTotalLayers - 16;
-            return depositVolumetricLava(level, pos.above(), overflowLayers);
-        }
+        return includeLava && s.is(TephraBlocks.MOLTEN_BASALT_BLOCK.get());
     }
 }

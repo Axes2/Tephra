@@ -13,10 +13,9 @@ import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
-import java.util.LinkedList;
-import java.util.Queue;
+import java.util.HashSet;
 import java.util.Iterator;
-import com.axes.tephra.block.profile.LavaPacket;
+import java.util.Set;
 
 public class VolcanoCoreBlockEntity extends BlockEntity {
 
@@ -28,7 +27,17 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
     private long lastRecordedGameTime = 0L;
     private float eruptionIntensity = 1.0f;
 
-    public final Queue<LavaPacket> activeFlows = new LinkedList<>();
+    // Every molten basalt source block this volcano has opened (vent pond, flank breakouts).
+    // Persisted so an eruption interrupted by a save/reload can still be quenched.
+    private final Set<BlockPos> ventSources = new HashSet<>();
+
+    // The leading edges of the active lava flows, marched downhill by the LavaFlowEngine.
+    // Persisted so an eruption interrupted by a save/reload keeps flowing where it left off.
+    private final Set<BlockPos> flowHeads = new HashSet<>();
+
+    // The authoritative height-field lava simulation for this volcano. Created lazily; its
+    // cells are persisted so an eruption interrupted by save/reload resumes exactly.
+    private com.axes.tephra.fluid.LavaSimulation lavaSim;
 
     // Default to CINDER_CONE for backwards compatibility
     private VolcanoType volcanoType = VolcanoType.CINDER_CONE;
@@ -69,6 +78,70 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
     public float getEruptionIntensity() { return this.eruptionIntensity; }
     public void setEruptionIntensity(float intensity) { this.eruptionIntensity = intensity; }
 
+    public void trackVentSource(BlockPos pos) {
+        this.ventSources.add(pos.immutable());
+        setChanged();
+    }
+
+    public void untrackVentSource(BlockPos pos) {
+        this.ventSources.remove(pos);
+        setChanged();
+    }
+
+    public int getVentSourceCount() {
+        return this.ventSources.size();
+    }
+
+    /** Live vent sources (summit pond, flank breakouts) this volcano is feeding. */
+    public Set<BlockPos> getVentSources() {
+        return this.ventSources;
+    }
+
+    // --- Lava flow heads: the marching leading edges driven by LavaFlowEngine ---
+
+    public Set<BlockPos> getFlowHeads() {
+        return this.flowHeads;
+    }
+
+    public void addFlowHead(BlockPos pos) {
+        this.flowHeads.add(pos.immutable());
+    }
+
+    public void removeFlowHead(BlockPos pos) {
+        this.flowHeads.remove(pos);
+    }
+
+    /** The lava height-field simulation for this volcano, created on first use. */
+    public com.axes.tephra.fluid.LavaSimulation getLavaSimulation() {
+        if (this.lavaSim == null) {
+            this.lavaSim = new com.axes.tephra.fluid.LavaSimulation();
+        }
+        return this.lavaSim;
+    }
+
+    /**
+     * Converts every tracked molten basalt source into finished rock when the sim is gone.
+     * Cinder cones plug with molten cinder; shields use vanilla basalt (no cinder palette).
+     */
+    public void quenchVentSources(Level level) {
+        Iterator<BlockPos> iterator = this.ventSources.iterator();
+        while (iterator.hasNext()) {
+            BlockPos ventPos = iterator.next();
+            if (!level.isLoaded(ventPos)) {
+                continue; // retried on a later tick
+            }
+            BlockState ventState = level.getBlockState(ventPos);
+            if (ventState.is(TephraBlocks.MOLTEN_BASALT_BLOCK.get()) && ventState.getFluidState().isSource()) {
+                BlockState plug = this.volcanoType == VolcanoType.SHIELD
+                        ? net.minecraft.world.level.block.Blocks.BASALT.defaultBlockState()
+                        : TephraBlocks.MOLTEN_CINDER.get().defaultBlockState();
+                level.setBlockAndUpdate(ventPos, plug);
+            }
+            iterator.remove();
+            setChanged();
+        }
+    }
+
     public static boolean isRumbleTick(Level level, BlockPos pos) {
         long combined = (long) pos.hashCode() ^ level.getGameTime();
         combined = combined * 6364136223846793005L + 1442695040888963407L;
@@ -86,28 +159,12 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
             return;
         }
 
-        VolcanoPhase currentPhase = this.getBlockState().getValue(VolcanoCoreBlock.PHASE);
+        // The chunk is still loading here, so we must never mutate blocks (that is what
+        // caused the cascading lighting-engine crashes). We only fast-forward the phase
+        // clock; the profiles' block work resumes safely on the first real tick.
         long elapsedTicks = this.level.getGameTime() - this.lastRecordedGameTime;
-
-        if (elapsedTicks > 100 && currentPhase == VolcanoPhase.ERUPTING) {
-            // Cap the maximum catch-up iterations to avoid temporary server hitching
-            // 24000 ticks is one full Minecraft day of missed growth
-            long catchUpTicks = Math.min(elapsedTicks, 24000L);
-
-            // Calculate how many intensity loops were missed
-            // Our standard server loop runs 10 times every single tick
-            long missedIterations = catchUpTicks * 10;
-
-            // Run a massive, silent background fast-forward sweep
-            for (long i = 0; i < missedIterations; i++) {
-                // Call your existing cinder cone generation math directly!
-                // Since this happens during chunk loading, the blocks are printed
-                // before the chunk finishes rendering on the player's screen.
-                this.activeProfile.tickServer(this.level, this.worldPosition, this.getBlockState(), currentPhase, this);
-            }
-
-            // Fast forward the core's internal phase clock variables
-            this.phaseTicks += (int) catchUpTicks;
+        if (elapsedTicks > 100) {
+            this.phaseTicks += (int) Math.min(elapsedTicks, 24000L);
         }
 
         // Synchronize the timestamp clock to the present moment
@@ -170,6 +227,27 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
 
         // Delegate profile actions (Deposition & Audio Loops)
         blockEntity.activeProfile.tickServer(level, pos, state, currentPhase, blockEntity);
+
+        // VOLUMETRIC LAVA: height-field sim owns spread while erupting and cools the field in
+        // place afterward (connectivity heat model). Soft-clear vent seeds when the eruption
+        // ends so BFS stops marking cells fed; don't stomp sim-owned blocks — freeze does that.
+        boolean erupting = currentPhase == VolcanoPhase.ERUPTING;
+        if (!erupting && !blockEntity.ventSources.isEmpty() && level.getGameTime() % 20 == 0) {
+            if (blockEntity.lavaSim != null && !blockEntity.lavaSim.isEmpty()) {
+                blockEntity.ventSources.clear();
+                blockEntity.setChanged();
+            } else {
+                blockEntity.quenchVentSources(level);
+            }
+        }
+
+        if (erupting) {
+            com.axes.tephra.fluid.LavaFlowEngine.tick(level, pos, blockEntity, true);
+        } else if (blockEntity.lavaSim != null && !blockEntity.lavaSim.isEmpty()) {
+            // Post-eruption die-down: no inject/relax, only feed+heat+freeze until empty.
+            com.axes.tephra.fluid.LavaFlowEngine.tick(level, pos, blockEntity, false);
+            blockEntity.setChanged();
+        }
 
         // STOCHASTIC OPERATIONAL DIAGNOSTICS TELEMETRY HUD
         if (level.getGameTime() % 2 == 0) { // Increased tick resolution from 10 to 2 for crisp diagnostic tracking
@@ -308,6 +386,11 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
         tag.putFloat("CraterBaseRadius", this.craterBaseRadius); // Save size
         tag.putString("VolcanoType", this.volcanoType.getSerializedName());
         tag.putLong("LastRecordedGameTime", level != null ? level.getGameTime() : this.lastRecordedGameTime);
+        tag.putLongArray("VentSources", this.ventSources.stream().mapToLong(BlockPos::asLong).toArray());
+        tag.putLongArray("FlowHeads", this.flowHeads.stream().mapToLong(BlockPos::asLong).toArray());
+        if (this.lavaSim != null && !this.lavaSim.isEmpty()) {
+            tag.put("LavaSim", this.lavaSim.save());
+        }
     }
 
     @Override
@@ -321,6 +404,17 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
             this.craterBaseRadius = tag.getFloat("CraterBaseRadius"); // Load size
         } else {
             this.craterBaseRadius = 12.0f; // Default fallback safety
+        }
+        this.ventSources.clear();
+        for (long packedPos : tag.getLongArray("VentSources")) {
+            this.ventSources.add(BlockPos.of(packedPos));
+        }
+        this.flowHeads.clear();
+        for (long packedPos : tag.getLongArray("FlowHeads")) {
+            this.flowHeads.add(BlockPos.of(packedPos));
+        }
+        if (tag.contains("LavaSim")) {
+            getLavaSimulation().load(tag.getCompound("LavaSim"));
         }
         if (tag.contains("VolcanoType")) {
             String typeName = tag.getString("VolcanoType");

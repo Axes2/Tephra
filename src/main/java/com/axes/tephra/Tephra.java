@@ -1,8 +1,13 @@
 package com.axes.tephra;
 
+import com.axes.tephra.block.LayeredBasaltBlock;
 import com.axes.tephra.block.TephraBlockEntities;
 import com.axes.tephra.block.TephraBlocks;
 import com.axes.tephra.config.TephraConfig;
+import com.axes.tephra.fluid.TephraFluids;
+import net.minecraft.util.Mth;
+import net.neoforged.neoforge.common.NeoForgeMod;
+import net.neoforged.neoforge.fluids.FluidInteractionRegistry;
 import com.axes.tephra.datagen.TephraBlockStateProvider;
 import com.axes.tephra.worldgen.TephraFeatures;
 import com.axes.tephra.worldgen.structure.TephraStructures;
@@ -38,6 +43,7 @@ public class Tephra {
 
         // 2. FIXED: Hook your true content registry classes into the mod event bus
         TephraBlocks.register(modEventBus);
+        TephraFluids.register(modEventBus);
         TephraStructures.register(modEventBus);
         TephraBlockEntities.register(modEventBus);
         com.axes.tephra.registry.TephraParticleTypes.register(modEventBus);
@@ -53,6 +59,18 @@ public class Tephra {
 
     private void commonSetup(FMLCommonSetupEvent event) {
         LOGGER.info("Tephra common setup initialized.");
+
+        event.enqueueWork(() -> {
+            // Molten basalt + water: sources quench into molten cinder, flowing lava freezes
+            // into layered basalt matching its fluid level (both measured in eighths).
+            FluidInteractionRegistry.addInteraction(TephraFluids.MOLTEN_BASALT_TYPE.get(),
+                    new FluidInteractionRegistry.InteractionInformation(
+                            NeoForgeMod.WATER_TYPE.value(),
+                            fluidState -> fluidState.isSource()
+                                    ? TephraBlocks.MOLTEN_CINDER.get().defaultBlockState()
+                                    : TephraBlocks.LAYERED_BASALT.get().defaultBlockState()
+                                            .setValue(LayeredBasaltBlock.LAYERS, Mth.clamp(fluidState.getAmount(), 1, 8))));
+        });
     }
 
     @SubscribeEvent

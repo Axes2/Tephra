@@ -11,6 +11,9 @@
   "tephra.configuration.magicNumberIntroduction": "Magic Number Text",
   "tephra.configuration.magicNumber": "Magic Number",
 
+  "block.tephra.molten_basalt": "Molten Basalt",
+  "fluid_type.tephra.molten_basalt": "Molten Basalt",
+
   "subtitles.tephra.volcano_rumble": "Volcano rumbles ominously",
   "subtitles.tephra.volcano_erupt": "Volcano erupts violently"
 }

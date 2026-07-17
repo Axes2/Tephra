@@ -1,7 +1,10 @@
 package com.axes.tephra.block;
 
 import com.axes.tephra.Tephra;
+import com.axes.tephra.fluid.MoltenBasaltLiquidBlock;
+import com.axes.tephra.fluid.TephraFluids;
 import net.minecraft.core.registries.Registries;
+import net.minecraft.world.level.block.SoundType;
 import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.level.block.Block;
@@ -46,20 +49,25 @@ public class TephraBlocks {
             () -> new MoltenCinderBlock(BlockBehaviour.Properties.of()
                     .mapColor(MapColor.COLOR_RED)
                     .strength(2.0F, 6.0F)
-                    .lightLevel((state) -> 12) // Gives it a hot, incandescent light emission
+                    // The incandescent glow dims as the crust ages: 12 -> 9 -> 6 -> 3
+                    .lightLevel((state) -> 12 - state.getValue(MoltenCinderBlock.AGE) * 3)
                     .randomTicks() // CRITICAL: Registers this block with the server's asynchronous chunk ticker
                     .requiresCorrectToolForDrops()
             ));
 
-    public static final DeferredHolder<Block, FlowingLavaBlock> FLOWING_LAVA = BLOCKS.register("flowing_lava",
-            () -> new FlowingLavaBlock(BlockBehaviour.Properties.of()
-                    .mapColor(MapColor.LAPIS) // Match lava's map color
+    // The liquid half of the volcano system. Properties mirror vanilla lava's block.
+    public static final DeferredHolder<Block, MoltenBasaltLiquidBlock> MOLTEN_BASALT_BLOCK = BLOCKS.register("molten_basalt",
+            () -> new MoltenBasaltLiquidBlock(TephraFluids.MOLTEN_BASALT.get(), BlockBehaviour.Properties.of()
+                    .mapColor(MapColor.FIRE)
                     .replaceable()
                     .noCollission()
-                    .instabreak()
-                    .pushReaction(PushReaction.DESTROY)
-                    .noOcclusion() // Prevents the game from culling adjacent faces of standard blocks
                     .randomTicks()
+                    .strength(100.0F)
+                    .lightLevel((state) -> 15)
+                    .pushReaction(PushReaction.DESTROY)
+                    .noLootTable()
+                    .liquid()
+                    .sound(SoundType.EMPTY)
             ));
 
     public static final DeferredHolder<Block, Block> LAYERED_BASALT = registerBlock("layered_basalt",
