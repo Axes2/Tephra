@@ -14,8 +14,8 @@ import java.util.Set;
  * Soft chunk tickets for rare crisis eruptions. Hard-capped so multiplayer cannot
  * force-load unbounded regions.
  *
- * <p>Effusive {@link com.axes.tephra.block.profile.LavaPacket} physics are unchanged;
- * tickets only keep a small neighborhood ticking during a declared crisis.
+ * <p>Does not replace {@link com.axes.tephra.fluid.LavaSimulation}; tickets only keep a
+ * small neighborhood ticking during a declared crisis.
  */
 public final class CrisisChunkTickets {
     public static final TicketType<ChunkPos> TEPHRA_CRISIS =
