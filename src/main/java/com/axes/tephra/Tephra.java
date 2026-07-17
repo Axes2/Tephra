@@ -52,12 +52,12 @@ public class Tephra {
     }
 
     private void commonSetup(FMLCommonSetupEvent event) {
-        LOGGER.info("Tephra common setup initialized.");
+        LOGGER.info("Tephra common setup initialized (volcano runtime foundation active).");
     }
 
     @SubscribeEvent
     public void onServerStarting(ServerStartingEvent event) {
-        LOGGER.info("Tephra server starting.");
+        LOGGER.info("Tephra server starting — volcano registry loads per-dimension via SavedData.");
     }
 
 }

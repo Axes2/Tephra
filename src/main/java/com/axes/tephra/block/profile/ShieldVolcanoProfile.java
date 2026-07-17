@@ -7,8 +7,11 @@ import com.axes.tephra.block.VolcanoCoreBlockEntity;
 import com.axes.tephra.block.VolcanoPhase;
 import com.axes.tephra.config.TephraConfig;
 import com.axes.tephra.registry.TephraParticleTypes;
+import com.axes.tephra.runtime.OfflineBudget;
+import com.axes.tephra.runtime.VolcanoRecord;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.util.RandomSource;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
@@ -85,10 +88,90 @@ public class ShieldVolcanoProfile implements VolcanoProfile {
                     Direction randomDir = Direction.Plane.HORIZONTAL.getRandomDirection(level.random);
                     blockEntity.activeFlows.add(new LavaPacket(findSurfaceBelow(level, spawnPos), 960, randomDir));
                 }
+
+                // Spend abstract offline lava as extra packets once chunks are back — same packet path.
+                spendPendingEffusiveLayers(level, blockEntity, ventPos);
             }
         }
 
         tickFluidPhysics(level, pos, blockEntity);
+    }
+
+    /**
+     * Offline coarse accrual only. Does not run {@link #tickFluidPhysics}; pending layers become
+     * real {@link LavaPacket}s when the core is loaded again.
+     */
+    @Override
+    public void tickOffline(ServerLevel level, VolcanoRecord record, OfflineBudget budget) {
+        record.setPhaseTicks(record.getPhaseTicks() + (int) Math.min(Integer.MAX_VALUE, budget.elapsedTicks()));
+
+        if (record.getPhase() == VolcanoPhase.ERUPTING) {
+            double days = budget.elapsedTicks() / 24000.0;
+            int layers = (int) Math.round(days * TephraConfig.COMMON.offlineLavaLayersPerDay.get() * record.getActivityLevel());
+            layers = Math.min(layers, budget.maxBlockOps() * 4);
+            record.addPendingLavaLayers(layers);
+            record.setAbstractFootprintRadius(record.getAbstractFootprintRadius() + layers / 960.0f);
+        }
+
+        // Coarse phase advance using shield durations (no block writes).
+        advanceShieldPhaseOffline(record);
+    }
+
+    private void advanceShieldPhaseOffline(VolcanoRecord record) {
+        int erupting = TephraConfig.COMMON.shieldEruptionDuration.get();
+        int dormant = TephraConfig.COMMON.shieldDormantDuration.get();
+        float activity = Math.max(0.5f, record.getActivityLevel());
+
+        switch (record.getPhase()) {
+            case ERUPTING -> {
+                if (record.getPhaseTicks() >= erupting) {
+                    record.setPhase(VolcanoPhase.RECOVERY);
+                    record.setPhaseTicks(0);
+                }
+            }
+            case RECOVERY -> {
+                if (record.getPhaseTicks() >= 1200) {
+                    record.setPhase(VolcanoPhase.DORMANT);
+                    record.setPhaseTicks(0);
+                }
+            }
+            case DORMANT -> {
+                int scaled = Math.max(1200, (int) (dormant / activity));
+                if (record.getPhaseTicks() >= scaled) {
+                    record.setPhase(VolcanoPhase.RUMBLING);
+                    record.setPhaseTicks(0);
+                }
+            }
+            case RUMBLING -> {
+                if (record.getPhaseTicks() >= 1200) {
+                    record.setPhase(VolcanoPhase.ERUPTING);
+                    record.setPhaseTicks(0);
+                }
+            }
+            case ACTIVE -> {
+                if (record.getPhaseTicks() >= 1200) {
+                    record.setPhase(VolcanoPhase.RUMBLING);
+                    record.setPhaseTicks(0);
+                }
+            }
+            default -> {
+            }
+        }
+    }
+
+    private void spendPendingEffusiveLayers(Level level, VolcanoCoreBlockEntity blockEntity, BlockPos ventPos) {
+        int pending = blockEntity.getPendingEffusiveLayers();
+        if (pending <= 0) {
+            return;
+        }
+        // One packet per spend pulse, matching live spawn volume (960), to preserve flow feel.
+        int packetVolume = Math.min(960, pending);
+        Direction randomDir = Direction.Plane.HORIZONTAL.getRandomDirection(level.random);
+        int offsetX = level.random.nextInt(9) - 4;
+        int offsetZ = level.random.nextInt(9) - 4;
+        BlockPos spawnPos = ventPos.offset(offsetX, 0, offsetZ);
+        blockEntity.activeFlows.add(new LavaPacket(findSurfaceBelow(level, spawnPos), packetVolume, randomDir));
+        blockEntity.setPendingEffusiveLayers(pending - packetVolume);
     }
 
     // --- EFFUSIVE VIRTUAL LAVA AGENT ALGORITHM ---
