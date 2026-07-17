@@ -1,12 +1,15 @@
 package com.axes.tephra.fluid;
 
 import com.axes.tephra.block.LayeredBasaltBlock;
+import com.axes.tephra.block.MoltenCinderBlock;
 import com.axes.tephra.block.TephraBlocks;
 import com.axes.tephra.block.VolcanoCoreBlockEntity;
+import com.axes.tephra.block.VolcanoType;
 import com.axes.tephra.config.TephraConfig;
 import it.unimi.dsi.fastutil.longs.Long2IntMap;
 import it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap;
 import it.unimi.dsi.fastutil.longs.LongArrayList;
+import it.unimi.dsi.fastutil.longs.LongArrayFIFOQueue;
 import it.unimi.dsi.fastutil.longs.LongComparator;
 import it.unimi.dsi.fastutil.longs.LongIterator;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
@@ -14,6 +17,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.tags.FluidTags;
+import net.minecraft.util.Mth;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
@@ -44,26 +48,74 @@ import net.minecraft.world.level.block.state.BlockState;
  * {@link MoltenBasaltFluid#tick}); it only renders the smooth sloped surfaces described by
  * the cell levels this class writes into the world.
  *
- * <p><b>Phase 1</b> covers spread (this class) only. Cooling still runs on
- * {@link MoltenBasaltFluid}'s random tick and is suppressed for live cells via
- * {@link LavaFlowEngine#isProtected}; the connectivity-based heat model arrives in Phase 2.
+ * <p><b>Cooling</b> is owned here too: a BFS from live vents writes {@code ventDist}, and a
+ * budgeted heat pass freezes cells at heat 0 into molten cinder / layered basalt. Fed cells
+ * (reachable from a vent) regain heat so the active channel never crusts mid-eruption; after
+ * the eruption ends the whole field cools distal- and margin-first.
  */
 public final class LavaSimulation {
 
     /** A full block is eight units of lava; levels run 1..{@value}. */
     public static final int FULL = 8;
 
+    /** Sentinel {@code ventDist}: cell has never been reached by a feed BFS (orphan / new). */
+    public static final int UNFED = 32767;
+
     /** Deepest a neighbour's landing surface is probed when judging downhill flow. */
     private static final int MAX_DROP = 8;
 
-    /** How far a confined cell scans across a flat for a downhill drop before it rises. */
-    private static final int SLOPE_FIND = 4;
+    /** How far a confined cell scans across a flat for a downhill drop or spare capacity before it
+     *  rises. Wider scan lets a summit pond expand and pour over its rim instead of doming. */
+    private static final int SLOPE_FIND = 8;
+
+    /**
+     * On slopes, prefer thickening a live channel toward this fill (units) so downhill rivers
+     * stay cohesive. On flats this is <b>not</b> used — flats use {@link #flatKeep} instead so
+     * lava runs out as a thin sheet rather than building a mound.
+     */
+    private static final int CHANNEL_MIN = 5;
+
+    /**
+     * Target max fill on flat ground (units). Cells thicker than this aggressively shed sideways,
+     * flattening the "giant blob" slope into a longer, stair-stepped sheet that can meander.
+     */
+    private static final int FLAT_KEEP = 3;
+
+    /**
+     * Residual ground-skin left behind while a flow is live (units). Resting cells never drain
+     * below this, so grass never flashes through as a 1-layer front steps across a block — new
+     * pulses instead bump the skin up to {@code TRAIL + 1} and the trail stays until the eruption
+     * ends / the sim releases.
+     */
+    private static final int TRAIL = 1;
 
     /** Max units a cell may shed sideways per step (viscosity); refreshed from config each tick. */
     private int viscosity = 4;
 
+    /**
+     * Softens frontier fingering for effusive volcanoes ({@code 0..1}). Only reduces stickiness —
+     * never enables one-unit sheets. Refreshed per tick from {@code shieldLateralSpread}.
+     */
+    private float spreadBias = 0.0f;
+
+    /** Cached from the owning volcano each tick — selects freeze products (cinder vs basalt). */
+    private VolcanoType volcanoType = VolcanoType.CINDER_CONE;
+
+    /** Server-tick accumulator so the field advances once per {@code lavaFlowAdvanceInterval}. */
+    private int stepCounter = 0;
+
+    /** Accumulator for vent-connectivity BFS (every {@code lavaFlowFeedInterval} ticks). */
+    private int feedCounter = 0;
+
+    /** Rotating offset so budgeted cool passes cover the whole field fairly. */
+    private int coolOffset = 0;
+
     /** Level -> lava units (1..FULL). Absent key means no lava (returns 0). */
     private final Long2IntOpenHashMap levels = new Long2IntOpenHashMap();
+    /** Parallel heat (0..HEAT_MAX); cell freezes when it reaches 0. */
+    private final Long2IntOpenHashMap heats = new Long2IntOpenHashMap();
+    /** Parallel BFS hops to nearest live vent; {@link #UNFED} if never reached. */
+    private final Long2IntOpenHashMap ventDists = new Long2IntOpenHashMap();
     /** Cells that may still move; settled cells leave the set and cost nothing. */
     private final LongOpenHashSet active = new LongOpenHashSet();
     /** Cells whose block needs re-writing to the world this step (level changed). */
@@ -71,11 +123,13 @@ public final class LavaSimulation {
     /** Cells that lost all their lava this step and must be cleared back to air. */
     private final LongOpenHashSet cleared = new LongOpenHashSet();
 
-    /** Set after NBT load so the first tick re-renders and re-registers every stored cell. */
+    /** Set after NBT load so the first tick re-renders every stored cell. */
     private boolean needsResync = false;
 
     public LavaSimulation() {
         levels.defaultReturnValue(0);
+        heats.defaultReturnValue(0);
+        ventDists.defaultReturnValue(UNFED);
     }
 
     // --- Public entry points -------------------------------------------------------------
@@ -90,48 +144,93 @@ public final class LavaSimulation {
     }
 
     /**
-     * Advances the simulation one step: injects fresh lava from every vent, relaxes the field
-     * toward equilibrium within a bounded op budget, then writes the changed cells into the
-     * world as native fluid blocks for the vanilla engine to render.
+     * Advances the simulation one step. While {@code erupting}, injects from vents and relaxes
+     * the height field; always refreshes feed connectivity on its interval and runs a budgeted
+     * heat/freeze pass so the field cools in place after the eruption ends.
      */
-    public void tick(Level level, VolcanoCoreBlockEntity be) {
+    public void tick(Level level, VolcanoCoreBlockEntity be, boolean erupting) {
         if (level.isClientSide) {
             return;
         }
         if (needsResync) {
-            // Freshly loaded from disk: re-mark every stored cell live and re-render it.
+            // Freshly loaded from disk: re-render and re-activate every stored cell.
             for (LongIterator it = levels.keySet().iterator(); it.hasNext(); ) {
                 long pos = it.nextLong();
                 dirty.add(pos);
                 active.add(pos);
-                LavaFlowEngine.markLive(level, pos);
             }
             needsResync = false;
+            feedCounter = TephraConfig.COMMON.lavaFlowFeedInterval.get(); // force BFS next step
         }
 
-        int rate = TephraConfig.COMMON.lavaFlowEruptionRate.get();
+        // Feed BFS runs on wall-clock ticks (not gated by advance interval) so cool-down still
+        // refreshes promptly when vents leave the seed set.
+        int feedInterval = Math.max(1, TephraConfig.COMMON.lavaFlowFeedInterval.get());
+        if (++feedCounter >= feedInterval) {
+            feedCounter = 0;
+            recomputeVentDist(level, be, erupting);
+        }
+
+        // Advance the field once per configured interval — the flow front creeps about one cell
+        // per step, so this is the flow speed (blocks/sec ~= 20 / interval).
+        int interval = Math.max(1, TephraConfig.COMMON.lavaFlowAdvanceInterval.get());
+        if (++stepCounter < interval) {
+            return;
+        }
+        stepCounter = 0;
+
         int maxCells = TephraConfig.COMMON.lavaFlowMaxCells.get();
         int maxOps = TephraConfig.COMMON.lavaFlowMaxOps.get();
         this.viscosity = TephraConfig.COMMON.lavaFlowViscosity.get();
+        this.volcanoType = be.getVolcanoType();
+        // Soften frontier fingering for shields only — never thin enough to dither a 1-unit sheet.
+        this.spreadBias = this.volcanoType == VolcanoType.SHIELD
+                ? (float) (double) TephraConfig.COMMON.shieldLateralSpread.get()
+                : 0.0f;
 
-        injectFromVents(level, be, rate, maxCells);
-        relax(level, maxOps, maxCells);
+        if (erupting) {
+            int rate = TephraConfig.COMMON.lavaFlowEruptionRate.get();
+            injectFromVents(level, be, rate, maxCells);
+            relax(level, maxOps, maxCells);
+        }
+
+        coolPass(level, erupting);
         writeback(level);
     }
 
     /**
-     * Called when the eruption ends. The simulation stops driving these cells: they are
-     * un-protected so the cooling rule can crust them in place, and dropped from the live set.
-     * The lava blocks stay exactly where they are and freeze — that IS the flow "dying down".
+     * Hard-clears the simulation without freezing cells in the world. Prefer letting the heat
+     * pass finish the field naturally; this exists for emergency teardown only.
      */
-    public void release(Level level) {
-        for (LongIterator it = levels.keySet().iterator(); it.hasNext(); ) {
-            LavaFlowEngine.unmarkLive(level, it.nextLong());
-        }
+    public void clear() {
         levels.clear();
+        heats.clear();
+        ventDists.clear();
         active.clear();
         dirty.clear();
         cleared.clear();
+    }
+
+    /**
+     * Collapses a molten tower above {@code minYExclusive} in column ({@code x},{@code z}): removes
+     * those cells from the simulation and clears molten-basalt blocks in the world. Used by the
+     * shield profile so the vent seat cannot climb a rising lava pile.
+     */
+    public void clearColumnAbove(Level level, int x, int minYExclusive, int z) {
+        int maxY = Math.min(level.getMaxBuildHeight() - 1, minYExclusive + 64);
+        for (int y = minYExclusive + 1; y <= maxY; y++) {
+            long key = BlockPos.asLong(x, y, z);
+            if (levels.containsKey(key)) {
+                remove(level, key);
+            }
+            BlockPos bp = new BlockPos(x, y, z);
+            if (!level.isLoaded(bp)) {
+                continue;
+            }
+            if (level.getBlockState(bp).is(TephraBlocks.MOLTEN_BASALT_BLOCK.get())) {
+                level.setBlockAndUpdate(bp, Blocks.AIR.defaultBlockState());
+            }
+        }
     }
 
     // --- Injection -----------------------------------------------------------------------
@@ -266,6 +365,7 @@ public final class LavaSimulation {
         // shows a tiny head and merely equalises (pooling). Spreading across all lower
         // neighbours distributes the vent's output and avoids a spike towering up at the source.
         int[] nSurf = new int[4];
+        int[] nKey = new int[4];
         long[] nPos = new long[4];
         boolean[] nWater = new boolean[4];
         int count = 0;
@@ -278,6 +378,7 @@ public final class LavaSimulation {
             if (isWater(level, npos) || touchesWater(level, npos)) {
                 nPos[count] = npos;
                 nSurf[count] = Integer.MIN_VALUE; // water is the lowest possible target
+                nKey[count] = Integer.MIN_VALUE;
                 nWater[count] = true;
                 count++;
                 continue;
@@ -298,21 +399,30 @@ public final class LavaSimulation {
             }
             nPos[count] = deposit;
             nSurf[count] = surf;
+            // Tie-break equal-surface neighbours by a fixed per-cell, per-direction preference so
+            // flat spreading funnels into a few favoured directions (meandering fingers/channels)
+            // instead of feeding all four sides equally, which paints a clean Manhattan diamond. A
+            // real height difference (>=1 level) scales by FULL and always dominates the small
+            // jitter, so genuine downhill is never overridden by the tie-break.
+            nKey[count] = surf * FULL + dirBias(pos, dir);
             nWater[count] = false;
             count++;
         }
-        // Insertion-sort the (at most four) neighbours by ascending surface.
+        // Insertion-sort the (at most four) neighbours by ascending tie-broken key.
         for (int a = 1; a < count; a++) {
+            int kk = nKey[a];
             int sk = nSurf[a];
             long pk = nPos[a];
             boolean wk = nWater[a];
             int b = a - 1;
-            while (b >= 0 && nSurf[b] > sk) {
+            while (b >= 0 && nKey[b] > kk) {
+                nKey[b + 1] = nKey[b];
                 nSurf[b + 1] = nSurf[b];
                 nPos[b + 1] = nPos[b];
                 nWater[b + 1] = nWater[b];
                 b--;
             }
+            nKey[b + 1] = kk;
             nSurf[b + 1] = sk;
             nPos[b + 1] = pk;
             nWater[b + 1] = wk;
@@ -336,42 +446,64 @@ public final class LavaSimulation {
             }
             int diff = surface - nSurf[k];
             int excess = Math.max(0, amount - FULL);
-            // Break the perfect Manhattan diamond into an organic delta: on FLAT ground each cell
-            // has a fixed pseudo-random stickiness (0..2 from its coordinates), and lava only
-            // creeps onto it once the head exceeds that. Sticky cells stay dry longer, so the front
-            // fingers and lobes instead of expanding as a clean diamond. Downhill flow (a lower
-            // landing) and unphysical excess ignore it and always move.
+            // Frontier fingering only: stickiness applies solely to EMPTY flat neighbours, and only
+            // when there is no over-pressure / runout pressure. Once a cell holds any lava it
+            // equalises freely, so the interior stays connected (no checkerboard gaps).
             boolean flat = BlockPos.getY(nPos[k]) >= y;
-            if (flat && excess == 0 && diff <= stickiness(nPos[k])) {
+            boolean runout = flat && amount > flatKeep();
+            if (flat && excess == 0 && !runout && nLvl == 0 && diff <= stickiness(nPos[k])) {
                 continue;
             }
-            // Two parts move: a gentle, viscosity-capped amount that gives the flow a visible
-            // channel (a real head of >= 2 units, so near-level lava can't creep a thin sheet
-            // across flats; FLOOR(diff/2) moves toward level without the overshoot that would
-            // oscillate); PLUS the unphysical EXCESS above a full block, shed with no cap so it
-            // resolves downhill in this pass rather than overflowing upward and flashing a face
-            // at a step-down.
-            int gentle = diff >= 2 ? Math.min(diff / 2, viscosity) : 0;
-            int t = Math.min(Math.min(amount, capacity), excess + gentle);
+            // Gentle equalisation + uncapped excess. On flats, allow a 1-unit head so thin sheets
+            // can creep (more stair-step artifacts, much longer reach); on slopes keep the stricter
+            // 2-unit head so toes don't sheet forever. Flat cells thicker than flatKeep also force
+            // a runout transfer so mounds flatten into meandering sheets instead of a blob slope.
+            int minDiff = flat ? 1 : 2;
+            int gentle = diff >= minDiff ? Math.min(Math.max(1, diff / 2), viscosity) : 0;
+            if (runout && nLvl < amount) {
+                int push = Math.min(amount - flatKeep(), viscosity);
+                gentle = Math.max(gentle, push);
+            }
+            // Only deepen toward CHANNEL_MIN on real downhill (builds a cohesive river). Doing this
+            // on flats was what stacked the thick near-vent blob the player sees as a slope.
+            int deepen = 0;
+            if (!flat && excess > 0 && nLvl < CHANNEL_MIN) {
+                deepen = Math.min(CHANNEL_MIN - nLvl, viscosity);
+            }
+            // Prefer feeding empty frontier cells when we have excess — extends the flow instead of
+            // just topping up neighbours that are already part of the puddle.
+            int tBudget = excess + Math.max(gentle, deepen);
+            if (flat && excess > 0 && nLvl == 0) {
+                tBudget = Math.max(tBudget, Math.min(viscosity, Math.max(flatKeep(), excess)));
+            }
+            // Resting cells keep a TRAIL skin — only the volume above it is free to move, so grass
+            // never flashes through as the front steps across a block.
+            int free = transferable(level, pos, amount);
+            int t = Math.min(Math.min(free, capacity), tBudget);
+            // Never drain a flat cell below flatKeep unless it's over-full excess leaving, so the
+            // sheet stays a continuous film rather than collapsing into speckles.
+            if (flat && excess == 0 && amount - t < flatKeep() && nLvl > 0) {
+                t = Math.min(t, Math.max(0, amount - flatKeep()));
+            }
+            // First contact on solid ground: lay trail + one active layer (2) when we can, so the
+            // block jumps grass → 2 instead of flickering through a lone 1-layer skin.
+            if (nLvl == 0 && t > 0 && restsOnSupport(level, nPos[k])) {
+                int prefer = TRAIL + 1;
+                if (t < prefer && free >= prefer && capacity >= prefer) {
+                    t = prefer;
+                }
+            }
             if (t > 0) {
                 addLevel(level, nPos[k], t, maxCells);
                 amount -= t;
                 moved = true;
             }
         }
-        // 3. UPWARD OVERFLOW — the sole way lava rises. Only when the cell is genuinely confined:
-        // every neighbour is a wall or sits at/above a full block here (a real basin/hole layer
-        // that is saturated). If any lower GROUND exists (a slope or ledge), never step up — hold
-        // the excess in place (it renders as a full block and drains downhill on a later pass).
-        // This is what stops the step-up flash at terrain step-downs and the orphan floating cell
-        // that a transiently-risen cell leaves when its base drains away.
+        // 3. UPWARD OVERFLOW — only when truly confined. Prefer expanding laterally (a drop, or
+        // spare capacity within SLOPE_FIND) so a summit pond grows outward instead of stacking a
+        // tower at the vent. Rise is the last resort for a real enclosed crater layer.
         if (amount > FULL && (count == 0 || nSurf[0] >= (y + 1) * FULL)) {
-            // Locally confined. Before rising, SEEK a downhill drop within SLOPE_FIND blocks: if
-            // lava could run off this flat somewhere, push the excess that way (priming the path)
-            // instead of doming up. Only a genuinely enclosed spot — a real crater or basin — rises.
-            // This is the FlowingFluids "look for a drop up to N away" idea, and it is what lets a
-            // shield summit shed its pond down the flanks rather than stack a step-tower at the vent.
-            Direction run = seekDrop(level, x, y, z);
+            Direction run = seekEscape(level, x, y, z);
             if (run != null) {
                 long n = BlockPos.asLong(x + run.getStepX(), y, z + run.getStepZ());
                 int move = Math.min(amount - FULL, FULL - existingLevel(level, n));
@@ -380,7 +512,7 @@ public final class LavaSimulation {
                     amount -= move;
                     moved = true;
                 }
-                setLevel(level, pos, amount, maxCells); // hold any remainder; drains toward the drop
+                setLevel(level, pos, amount, maxCells); // hold any remainder; drains toward the escape
             } else {
                 long above = BlockPos.asLong(x, y + 1, z);
                 if (y + 1 < level.getMaxBuildHeight() && canOccupy(level, above) && !isWater(level, above)) {
@@ -438,49 +570,104 @@ public final class LavaSimulation {
     }
 
     /**
-     * A fixed per-cell "stickiness" (0..2) derived from the cell's packed coordinates — the same
-     * cell always yields the same value, so the organic fingers it creates on flat ground are
-     * stable terrain, not shimmering noise. Weighted toward 0 so most ground still floods freely.
+     * Mild per-cell frontier stickiness (0..2) from a stable coordinate hash — the pre-session
+     * polish that fingers the leading edge without dithering the interior. Only consulted for
+     * empty flat neighbours. {@link #spreadBias} softens it for shields; it never goes negative.
      */
-    private static int stickiness(long pos) {
+    private int stickiness(long pos) {
         long h = pos * 0x9E3779B97F4A7C15L;
         h ^= (h >>> 29);
         int v = (int) (h & 7L);
-        return v < 4 ? 0 : (v < 7 ? 1 : 2); // ~50% none, ~37% mild, ~13% strong
+        int s = v < 4 ? 0 : (v < 7 ? 1 : 2); // ~50% none, ~37% mild, ~13% strong
+        if (spreadBias > 0.0f) {
+            s = Math.round(s * (1.0f - 0.5f * spreadBias)); // soften, don't erase
+        }
+        return s;
+    }
+
+    /** How thick a flat cell tries to stay before forcing runout; shields run a bit thinner. */
+    private int flatKeep() {
+        return spreadBias >= 0.5f ? Math.max(2, FLAT_KEEP - 1) : FLAT_KEEP;
+    }
+
+    /** True when this cell rests on solid support (not a falling mid-air column). */
+    private boolean restsOnSupport(Level level, long pos) {
+        BlockPos bp = BlockPos.of(pos);
+        return level.isLoaded(bp) && !fallingInto(level, bp);
     }
 
     /**
-     * Scans each horizontal direction up to {@link #SLOPE_FIND} cells for genuinely lower ground
-     * and returns the direction toward the steepest drop found, or {@code null} if this spot is
-     * truly enclosed (a real basin). Lets lava on a flat run toward a downhill edge instead of
-     * piling up — the runniness the shield summit needs to shed its pond down the flanks.
+     * How many units may leave this cell this step. Resting cells keep a {@link #TRAIL} skin so
+     * the ground never flashes through; falling columns can drain completely.
      */
-    private Direction seekDrop(Level level, int x, int y, int z) {
-        Direction best = null;
-        int bestDrop = 0;
+    private int transferable(Level level, long pos, int amount) {
+        if (amount <= 0) {
+            return 0;
+        }
+        if (!restsOnSupport(level, pos)) {
+            return amount;
+        }
+        return Math.max(0, amount - TRAIL);
+    }
+
+    /**
+     * A fixed 0..{@code FULL-1} preference for spilling from {@code pos} in {@code dir}, used only
+     * to break ties between neighbours at exactly equal surface height. Soft preference only —
+     * all lower neighbours still receive lava; this just orders which finger grows first.
+     */
+    private static int dirBias(long pos, Direction dir) {
+        long h = (pos * 0x9E3779B97F4A7C15L) ^ ((long) dir.ordinal() * 0x632BE59BD9B4E019L);
+        h ^= (h >>> 31);
+        return (int) Math.floorMod(h, (long) FULL);
+    }
+
+    /**
+     * Finds a horizontal escape for over-pressure before allowing upward overflow:
+     * <ol>
+     *   <li>A genuine downhill drop within {@link #SLOPE_FIND} (preferred).</li>
+     *   <li>Otherwise a same-level cell with spare capacity, so a filled pond expands outward
+     *       instead of stacking a tower at the vent.</li>
+     * </ol>
+     * Returns {@code null} only when the cell is truly enclosed (real crater / all walls).
+     */
+    private Direction seekEscape(Level level, int x, int y, int z) {
+        Direction bestDrop = null;
+        int bestDropAmt = 0;
+        Direction bestCap = null;
+        int bestCapDist = Integer.MAX_VALUE;
         for (Direction dir : Direction.Plane.HORIZONTAL) {
             for (int dist = 1; dist <= SLOPE_FIND; dist++) {
                 int nx = x + dir.getStepX() * dist, nz = z + dir.getStepZ() * dist;
-                if (isWall(level, BlockPos.asLong(nx, y, nz))) {
+                long atY = BlockPos.asLong(nx, y, nz);
+                if (isWall(level, atY)) {
                     break; // blocked this way
                 }
                 long land = landingCell(level, nx, y, nz);
                 int landY = land == NO_LANDING ? y - MAX_DROP : BlockPos.getY(land);
                 if (landY < y) {
                     int drop = y - landY;
-                    if (drop > bestDrop) {
-                        bestDrop = drop;
-                        best = dir;
+                    if (drop > bestDropAmt) {
+                        bestDropAmt = drop;
+                        bestDrop = dir;
                     }
                     break; // found the drop in this direction
                 }
                 if (landY > y) {
                     break; // uphill — stop scanning this way
                 }
-                // landY == y: flat continues, keep looking further
+                // Same level: look for spare capacity so the pond can grow instead of rising.
+                long cell = (land == NO_LANDING || BlockPos.getY(land) != y) ? atY : land;
+                if (existingLevel(level, cell) < FULL && canOccupy(level, cell)) {
+                    if (dist < bestCapDist) {
+                        bestCapDist = dist;
+                        bestCap = dir;
+                    }
+                    break;
+                }
+                // Full at this distance — keep looking farther along the flat.
             }
         }
-        return best;
+        return bestDrop != null ? bestDrop : bestCap;
     }
 
     /**
@@ -513,33 +700,43 @@ public final class LavaSimulation {
         setLevel(level, pos, existingLevel(level, pos) + delta, maxCells);
     }
 
-    /** Sets a cell's level, keeping the active/dirty/registry bookkeeping in sync. */
+    /**
+     * Sets a cell's level, keeping the active/dirty/heat bookkeeping in sync. Resting cells
+     * that would drain to empty instead keep a {@link #TRAIL} skin for the life of the eruption,
+     * so the block below never flashes through as the front steps onward.
+     */
     private void setLevel(Level level, long pos, int value, int maxCells) {
         if (value <= 0) {
-            remove(level, pos);
-            return;
+            if (levels.containsKey(pos) && restsOnSupport(level, pos)) {
+                value = TRAIL;
+            } else {
+                remove(level, pos);
+                return;
+            }
         }
         boolean isNew = !levels.containsKey(pos);
         if (isNew && levels.size() >= maxCells) {
             return; // at the cell cap: refuse new cells so the field can't grow unbounded
         }
         levels.put(pos, value);
+        if (isNew) {
+            heats.put(pos, (int) TephraConfig.COMMON.lavaFlowHeatMax.get());
+            ventDists.put(pos, UNFED);
+        }
         active.add(pos);
         dirty.add(pos);
         cleared.remove(pos);
         wakeNeighbours(pos);
-        if (isNew) {
-            LavaFlowEngine.markLive(level, pos);
-        }
     }
 
     private void remove(Level level, long pos) {
         if (levels.containsKey(pos)) {
             levels.remove(pos);
+            heats.remove(pos);
+            ventDists.remove(pos);
             cleared.add(pos);
             dirty.remove(pos);
             wakeNeighbours(pos); // freed space: neighbours above/beside may now flow in
-            LavaFlowEngine.unmarkLive(level, pos);
         }
         active.remove(pos);
     }
@@ -639,6 +836,190 @@ public final class LavaSimulation {
         return false;
     }
 
+    // --- Feed & cooling ------------------------------------------------------------------
+
+    /**
+     * BFS from live vents through connected lava cells, writing {@code ventDist}. When there
+     * are no seeds (eruption over / vents quenched), existing distances are left alone so the
+     * distal-loss term can still walk the crust from the toes back toward the vent.
+     */
+    private void recomputeVentDist(Level level, VolcanoCoreBlockEntity be, boolean erupting) {
+        if (!erupting || be.getVentSources().isEmpty()) {
+            return;
+        }
+
+        for (LongIterator it = levels.keySet().iterator(); it.hasNext(); ) {
+            ventDists.put(it.nextLong(), UNFED);
+        }
+
+        LongArrayFIFOQueue queue = new LongArrayFIFOQueue();
+        int budget = TephraConfig.COMMON.lavaFlowMaxCells.get() * 2;
+        int visited = 0;
+
+        for (BlockPos vent : be.getVentSources()) {
+            long key = vent.asLong();
+            if (!levels.containsKey(key)) {
+                continue;
+            }
+            if (!level.isLoaded(vent)) {
+                continue;
+            }
+            ventDists.put(key, 0);
+            queue.enqueue(key);
+        }
+
+        while (!queue.isEmpty() && visited < budget) {
+            long pos = queue.dequeueLong();
+            visited++;
+            int dist = ventDists.get(pos);
+            int x = BlockPos.getX(pos), y = BlockPos.getY(pos), z = BlockPos.getZ(pos);
+            for (Direction dir : Direction.values()) {
+                long n = BlockPos.asLong(x + dir.getStepX(), y + dir.getStepY(), z + dir.getStepZ());
+                if (!levels.containsKey(n)) {
+                    continue;
+                }
+                if (ventDists.get(n) != UNFED) {
+                    continue;
+                }
+                BlockPos nbp = BlockPos.of(n);
+                if (!level.isLoaded(nbp)) {
+                    continue;
+                }
+                ventDists.put(n, dist + 1);
+                queue.enqueue(n);
+            }
+        }
+    }
+
+    /**
+     * Budgeted heat pass: every cell loses heat from exposure/thinness/distance; cells still
+     * reachable from a live vent regain heat. At heat 0 the cell freezes into permanent rock.
+     */
+    private void coolPass(Level level, boolean erupting) {
+        if (levels.isEmpty()) {
+            return;
+        }
+        int heatMax = TephraConfig.COMMON.lavaFlowHeatMax.get();
+        int baseLoss = TephraConfig.COMMON.lavaFlowBaseLoss.get();
+        int edgeLoss = TephraConfig.COMMON.lavaFlowEdgeLoss.get();
+        int thinLoss = TephraConfig.COMMON.lavaFlowThinLoss.get();
+        int distalLoss = TephraConfig.COMMON.lavaFlowDistalLoss.get();
+        int refeed = TephraConfig.COMMON.lavaFlowRefeedRate.get();
+        int budget = TephraConfig.COMMON.lavaFlowCoolOps.get();
+
+        LongArrayList keys = new LongArrayList(levels.keySet());
+        LongArrayList toFreeze = new LongArrayList();
+        int size = keys.size();
+        int n = Math.min(size, budget);
+        int start = size == 0 ? 0 : Math.floorMod(coolOffset, size);
+        coolOffset = start + n;
+        for (int i = 0; i < n; i++) {
+            long pos = keys.getLong((start + i) % size);
+            int amount = levels.get(pos);
+            if (amount <= 0) {
+                continue;
+            }
+            BlockPos bp = BlockPos.of(pos);
+            if (!level.isLoaded(bp)) {
+                continue;
+            }
+
+            int dist = ventDists.get(pos);
+            boolean fed = erupting && dist != UNFED;
+
+            int openSides = openHorizontalSides(level, pos);
+            int loss = baseLoss + edgeLoss * openSides;
+            if (amount <= 2) {
+                loss += thinLoss;
+            }
+            if (dist != UNFED) {
+                loss += distalLoss * Math.min(dist / 4, 8);
+            } else {
+                loss += distalLoss * 8; // never-connected orphans cool as distal toes
+            }
+
+            int heat = heats.get(pos);
+            if (heat <= 0) {
+                heat = heatMax; // legacy / missing entry
+            }
+            heat = Math.max(0, heat - loss);
+            if (fed) {
+                heat = Math.min(heatMax, heat + refeed);
+            }
+            heats.put(pos, heat);
+
+            if (heat <= 0) {
+                toFreeze.add(pos);
+            }
+        }
+
+        for (int i = 0; i < toFreeze.size(); i++) {
+            freezeCell(level, toFreeze.getLong(i));
+        }
+    }
+
+    /** Open air/replaceable horizontal neighbours — exposure that drives edge-first crusting. */
+    private int openHorizontalSides(Level level, long pos) {
+        int open = 0;
+        int x = BlockPos.getX(pos), y = BlockPos.getY(pos), z = BlockPos.getZ(pos);
+        for (Direction dir : Direction.Plane.HORIZONTAL) {
+            long n = BlockPos.asLong(x + dir.getStepX(), y, z + dir.getStepZ());
+            if (levels.containsKey(n)) {
+                continue; // lava neighbour — closed
+            }
+            BlockPos nbp = BlockPos.of(n);
+            if (!level.isLoaded(nbp)) {
+                continue;
+            }
+            BlockState neighbor = level.getBlockState(nbp);
+            if (neighbor.getFluidState().isEmpty() && (neighbor.isAir() || neighbor.canBeReplaced())) {
+                open++;
+            }
+        }
+        return open;
+    }
+
+    /**
+     * Converts a sim cell into permanent volcanic rock and drops it from the simulation.
+     * Cinder cones: full/falling → molten cinder (ages to solid rock). Shields: full/falling →
+     * vanilla basalt (no cinder). Partial heights always become layered basalt.
+     */
+    private void freezeCell(Level level, long pos) {
+        int amount = levels.get(pos);
+        if (amount <= 0) {
+            remove(level, pos);
+            return;
+        }
+        BlockPos bp = BlockPos.of(pos);
+        boolean falling = level.isLoaded(bp) && fallingInto(level, bp);
+        BlockState result;
+        if (amount >= FULL || falling) {
+            if (volcanoType == VolcanoType.SHIELD) {
+                result = Blocks.BASALT.defaultBlockState();
+            } else {
+                result = TephraBlocks.MOLTEN_CINDER.get().defaultBlockState()
+                        .setValue(MoltenCinderBlock.AGE, 0);
+            }
+        } else {
+            result = TephraBlocks.LAYERED_BASALT.get().defaultBlockState()
+                    .setValue(LayeredBasaltBlock.LAYERS, Mth.clamp(amount, 1, 8));
+        }
+
+        // Drop from the sim without queuing an air-clear (we are placing rock instead).
+        levels.remove(pos);
+        heats.remove(pos);
+        ventDists.remove(pos);
+        active.remove(pos);
+        dirty.remove(pos);
+        cleared.remove(pos);
+        wakeNeighbours(pos);
+
+        if (level.isLoaded(bp)) {
+            level.setBlockAndUpdate(bp, result);
+            level.levelEvent(1501, bp, 0); // lava-extinguish fizz + smoke
+        }
+    }
+
     // --- World writeback (the render "view") ---------------------------------------------
 
     /**
@@ -719,32 +1100,65 @@ public final class LavaSimulation {
         CompoundTag tag = new CompoundTag();
         long[] positions = new long[levels.size()];
         byte[] amounts = new byte[levels.size()];
+        int[] heatVals = new int[levels.size()];
+        int[] dists = new int[levels.size()];
+        int heatMax = TephraConfig.COMMON.lavaFlowHeatMax.get();
         int i = 0;
         for (Long2IntMap.Entry e : levels.long2IntEntrySet()) {
-            positions[i] = e.getLongKey();
+            long key = e.getLongKey();
+            positions[i] = key;
             // Clamp to a real block height: a cell may momentarily hold >FULL units mid-relax
             // (freshly injected, not yet shed), which is a transient we never need to persist.
             amounts[i] = (byte) Math.min(e.getIntValue(), FULL);
+            int h = heats.get(key);
+            if (h <= 0) {
+                h = heatMax;
+            }
+            heatVals[i] = h;
+            dists[i] = ventDists.get(key);
             i++;
         }
         tag.putLongArray("Positions", positions);
         tag.putByteArray("Amounts", amounts);
+        tag.putIntArray("Heats", heatVals);
+        tag.putIntArray("VentDists", dists);
         return tag;
     }
 
     public void load(CompoundTag tag) {
         levels.clear();
+        heats.clear();
+        ventDists.clear();
         active.clear();
         dirty.clear();
         cleared.clear();
         long[] positions = tag.getLongArray("Positions");
         byte[] amounts = tag.getByteArray("Amounts");
+        // Prefer int[] Heats; fall back to legacy byte[] from earlier Phase 2 saves.
+        int[] heatVals = tag.getIntArray("Heats");
+        byte[] legacyHeats = heatVals.length == 0 && tag.contains("Heats")
+                ? tag.getByteArray("Heats") : new byte[0];
+        int[] dists = tag.contains("VentDists") ? tag.getIntArray("VentDists") : new int[0];
+        int heatMax = TephraConfig.COMMON.lavaFlowHeatMax.get();
         int n = Math.min(positions.length, amounts.length);
         for (int i = 0; i < n; i++) {
             int amount = amounts[i] & 0xFF;
-            if (amount > 0) {
-                levels.put(positions[i], Math.min(amount, FULL));
+            if (amount <= 0) {
+                continue;
             }
+            long key = positions[i];
+            levels.put(key, Math.min(amount, FULL));
+            int h;
+            if (heatVals.length > i) {
+                h = heatVals[i];
+            } else if (i < legacyHeats.length) {
+                h = legacyHeats[i] & 0xFF;
+            } else {
+                h = heatMax;
+            }
+            heats.put(key, h > 0 ? h : heatMax);
+            int d = i < dists.length ? dists[i] : UNFED;
+            ventDists.put(key, d >= 0 ? d : UNFED);
         }
         needsResync = !levels.isEmpty();
     }

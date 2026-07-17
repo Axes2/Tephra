@@ -21,8 +21,10 @@ import net.neoforged.neoforge.registries.NeoForgeRegistries;
 /**
  * Molten basalt: the effusive lava produced by Tephra's volcanoes.
  *
- * <p>It is a real {@link FlowingFluid}, so the vanilla fluid engine handles spreading,
- * sloped surfaces, and falling columns down cliffs. It is also a member of the
+ * <p>It is a real {@link FlowingFluid}, but spreading is driven entirely by the authoritative
+ * {@link LavaSimulation} height field, not the vanilla engine — the vanilla engine only renders
+ * the smooth sloped surfaces and falling columns the simulation's cell levels describe (see
+ * {@link MoltenBasaltFluid#tick}, which is a no-op). It is also a member of the
  * {@code minecraft:lava} fluid tag (see {@code data/minecraft/tags/fluid/lava.json}),
  * which gives it the full vanilla lava entity behaviour: burning, lava fog, slowed
  * movement, boat/item destruction, and mob pathfinding avoidance.
@@ -81,11 +83,10 @@ public class TephraFluids {
             FLUIDS.register("flowing_molten_basalt", () -> new MoltenBasaltFluid.Flowing(fluidProperties()));
 
     private static BaseFlowingFluid.Properties fluidProperties() {
-        // The LavaFlowEngine drives long-range transport by marching source blocks; the
-        // vanilla engine only has to render and fill the smooth segments between them. A
-        // fast tick rate (nether-lava speed) keeps that local spread and recede lively so
-        // the flow front reads as energetic, moving liquid. Drop-off 1 gives a wide molten
-        // channel around each marched source.
+        // Transport is owned by the LavaSimulation height field; these vanilla properties only
+        // affect how the resulting blocks render (slope find distance / level drop-off shape the
+        // sloped surfaces) and the entity/tick behaviour. The engine does not rely on vanilla
+        // spreading — MoltenBasaltFluid#tick is a deliberate no-op.
         return new BaseFlowingFluid.Properties(MOLTEN_BASALT_TYPE, MOLTEN_BASALT, FLOWING_MOLTEN_BASALT)
                 .block(TephraBlocks.MOLTEN_BASALT_BLOCK)
                 .slopeFindDistance(3)

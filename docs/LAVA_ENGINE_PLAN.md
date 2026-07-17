@@ -275,10 +275,12 @@ now unused and will be retired in Phase 2 alongside the cooling rewrite.)
 > cached), so runtime verification used the standalone rule-port harness rather
 > than an in-game session. A normal `./gradlew build` should be run before merge.
 
-**Phase 2 — Feed & cooling.**
-BFS fed-distance field, heat model, freeze rules; delete the protection registry
-and random-tick cooling; retire the old config keys and add the new ones.
-*Exit criteria:* while erupting, the vent-to-front channel never crusts;
+**Phase 2 — Feed & cooling. ✅ DONE.**
+BFS fed-distance field, heat model, freeze rules inside `LavaSimulation`; deleted
+the protection registry and random-tick cooling; retired `lavaFlowMaxHeads` /
+`lavaFlowBranchChance` / `lavaFlowCoolingDelay`; added heat/feed config keys.
+Post-eruption the sim keeps ticking (no inject/relax) until the field freezes
+empty. *Exit criteria:* while erupting, the vent-to-front channel never crusts;
 margins/toes crust first; after eruption end the crust front visibly walks from
 the toes back to the vent.
 

@@ -120,9 +120,8 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
     }
 
     /**
-     * Converts every tracked molten basalt source back into molten cinder. Flowing lava
-     * downstream of a quenched source recedes and freezes on its own — that IS the
-     * "flow dying down" visual at the end of an eruption.
+     * Converts every tracked molten basalt source into finished rock when the sim is gone.
+     * Cinder cones plug with molten cinder; shields use vanilla basalt (no cinder palette).
      */
     public void quenchVentSources(Level level) {
         Iterator<BlockPos> iterator = this.ventSources.iterator();
@@ -133,7 +132,10 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
             }
             BlockState ventState = level.getBlockState(ventPos);
             if (ventState.is(TephraBlocks.MOLTEN_BASALT_BLOCK.get()) && ventState.getFluidState().isSource()) {
-                level.setBlockAndUpdate(ventPos, TephraBlocks.MOLTEN_CINDER.get().defaultBlockState());
+                BlockState plug = this.volcanoType == VolcanoType.SHIELD
+                        ? net.minecraft.world.level.block.Blocks.BASALT.defaultBlockState()
+                        : TephraBlocks.MOLTEN_CINDER.get().defaultBlockState();
+                level.setBlockAndUpdate(ventPos, plug);
             }
             iterator.remove();
             setChanged();
@@ -226,22 +228,24 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
         // Delegate profile actions (Deposition & Audio Loops)
         blockEntity.activeProfile.tickServer(level, pos, state, currentPhase, blockEntity);
 
-        // The eruption is over: quench any vents that are still pumping. Downstream flows
-        // recede and freeze on their own once their source is gone.
-        if (currentPhase != VolcanoPhase.ERUPTING && !blockEntity.ventSources.isEmpty()
-                && level.getGameTime() % 20 == 0) {
-            blockEntity.quenchVentSources(level);
+        // VOLUMETRIC LAVA: height-field sim owns spread while erupting and cools the field in
+        // place afterward (connectivity heat model). Soft-clear vent seeds when the eruption
+        // ends so BFS stops marking cells fed; don't stomp sim-owned blocks — freeze does that.
+        boolean erupting = currentPhase == VolcanoPhase.ERUPTING;
+        if (!erupting && !blockEntity.ventSources.isEmpty() && level.getGameTime() % 20 == 0) {
+            if (blockEntity.lavaSim != null && !blockEntity.lavaSim.isEmpty()) {
+                blockEntity.ventSources.clear();
+                blockEntity.setChanged();
+            } else {
+                blockEntity.quenchVentSources(level);
+            }
         }
 
-        // VOLUMETRIC LAVA FLOW: while erupting, the flow engine marches liquid lava fronts
-        // far downhill from every vent, pooling and branching, and leaving cooling flows
-        // that build the edifice. This carries lava well beyond the vanilla ~7-block reach.
-        if (currentPhase == VolcanoPhase.ERUPTING) {
-            com.axes.tephra.fluid.LavaFlowEngine.tick(level, pos, blockEntity);
+        if (erupting) {
+            com.axes.tephra.fluid.LavaFlowEngine.tick(level, pos, blockEntity, true);
         } else if (blockEntity.lavaSim != null && !blockEntity.lavaSim.isEmpty()) {
-            // Eruption over: release the simulated cells so they cool and crust in place —
-            // the flow "dying down" — instead of being driven any further.
-            blockEntity.lavaSim.release(level);
+            // Post-eruption die-down: no inject/relax, only feed+heat+freeze until empty.
+            com.axes.tephra.fluid.LavaFlowEngine.tick(level, pos, blockEntity, false);
             blockEntity.setChanged();
         }
 

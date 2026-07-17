@@ -10,13 +10,19 @@ public class TephraConfig {
         public final ModConfigSpec.DoubleValue shieldLateralSpread;
 
         public final ModConfigSpec.IntValue lavaFlowAdvanceInterval;
-        public final ModConfigSpec.IntValue lavaFlowMaxHeads;
-        public final ModConfigSpec.DoubleValue lavaFlowBranchChance;
-        public final ModConfigSpec.IntValue lavaFlowCoolingDelay;
         public final ModConfigSpec.IntValue lavaFlowEruptionRate;
         public final ModConfigSpec.IntValue lavaFlowViscosity;
         public final ModConfigSpec.IntValue lavaFlowMaxCells;
         public final ModConfigSpec.IntValue lavaFlowMaxOps;
+
+        public final ModConfigSpec.IntValue lavaFlowHeatMax;
+        public final ModConfigSpec.IntValue lavaFlowBaseLoss;
+        public final ModConfigSpec.IntValue lavaFlowEdgeLoss;
+        public final ModConfigSpec.IntValue lavaFlowThinLoss;
+        public final ModConfigSpec.IntValue lavaFlowDistalLoss;
+        public final ModConfigSpec.IntValue lavaFlowRefeedRate;
+        public final ModConfigSpec.IntValue lavaFlowFeedInterval;
+        public final ModConfigSpec.IntValue lavaFlowCoolOps;
 
         public final ModConfigSpec.BooleanValue screenShake;
 
@@ -25,8 +31,8 @@ public class TephraConfig {
 
             screenShake = builder
                     .comment("Whether nearby volcanoes shake the camera (rumbling and eruptions).",
-                            "Set to false to disable the screen shake entirely. Default: true")
-                    .define("screenShake", true);
+                            "Set to false to disable the screen shake entirely. Default: false")
+                    .define("screenShake", false);
 
             builder.pop();
 
@@ -41,7 +47,8 @@ public class TephraConfig {
                     .defineInRange("shieldDormantDuration", 6000, 1200, 72000);
 
             shieldLateralSpread = builder
-                    .comment("Chance (0.0 to 1.0) for lava agents to spread sideways on flat ground. Higher = flatter volcano.")
+                    .comment("How much a Shield softens frontier fingering (0.0 to 1.0). Higher = slightly",
+                            "smoother rim overflow; lower = more lobed edges. Does not create thin sheets.")
                     .defineInRange("shieldLateralSpread", 0.90, 0.1, 1.0);
 
             builder.pop();
@@ -49,27 +56,11 @@ public class TephraConfig {
             builder.push("LavaFlow");
 
             lavaFlowAdvanceInterval = builder
-                    .comment("Ticks between each simulation step while erupting. The flow front advances",
-                            "about one block per step, so this sets the flow speed: blocks/second is",
-                            "roughly 20 / this value. Higher = slower, calmer rivers. Default: 8 (~2/sec)")
-                    .defineInRange("lavaFlowAdvanceInterval", 8, 1, 200);
-
-            lavaFlowMaxHeads = builder
-                    .comment("Maximum simultaneous flow fronts ('heads') a single volcano may drive.",
-                            "This is the main bound on how broad and expansive flows get, and on",
-                            "server cost near an erupting volcano. Higher = larger flow fields. Default: 6")
-                    .defineInRange("lavaFlowMaxHeads", 6, 1, 32);
-
-            lavaFlowBranchChance = builder
-                    .comment("Chance (0.0 to 1.0) that a flow front splits into a second lobe when it",
-                            "advances, letting flows fan into multiple channels. Default: 0.25")
-                    .defineInRange("lavaFlowBranchChance", 0.25, 0.0, 1.0);
-
-            lavaFlowCoolingDelay = builder
-                    .comment("How stubbornly molten lava resists crusting into rock (higher = it stays",
-                            "liquid longer before solidifying in place). Cooling always starts at the",
-                            "exposed edges of a flow and spares actively-flowing lava. Default: 2")
-                    .defineInRange("lavaFlowCoolingDelay", 2, 1, 40);
+                    .comment("Ticks between each height-field simulation step while erupting. The flow",
+                            "front advances about one cell per step, so this sets the flow speed:",
+                            "blocks/second is roughly 20 / this value. 1 = every tick (fast, lively);",
+                            "higher = slower, calmer rivers. Default: 3")
+                    .defineInRange("lavaFlowAdvanceInterval", 3, 1, 200);
 
             // --- Height-field simulation (LavaSimulation) ---
 
@@ -78,27 +69,67 @@ public class TephraConfig {
                             "and feeds into the flow per sim step (8 units = one full block). The vent is",
                             "capped at this over-pressure, so it can never accumulate into a tower — excess",
                             "the flow can't carry away is simply not emitted. Keep this low for slender,",
-                            "individual flows; raise it for broad, fast-spreading floods. Default: 2")
-                    .defineInRange("lavaFlowEruptionRate", 2, 1, 512);
+                            "individual flows; raise it for broad, fast-spreading floods. Default: 6")
+                    .defineInRange("lavaFlowEruptionRate", 6, 1, 512);
 
             lavaFlowViscosity = builder
                     .comment("Maximum units of lava a single cell sheds sideways per simulation step",
                             "(1 block = 8 units). This is the flow's viscosity: lower = stiffer, thicker,",
                             "shorter flows that pile up; higher = runnier, thinner, longer flows. Downhill",
-                            "always follows the fall line regardless. Default: 4")
-                    .defineInRange("lavaFlowViscosity", 4, 1, 8);
+                            "always follows the fall line regardless. Default: 2")
+                    .defineInRange("lavaFlowViscosity", 2, 1, 8);
 
             lavaFlowMaxCells = builder
                     .comment("Hard cap on the number of live lava cells a single volcano may simulate at",
                             "once. Bounds memory and the size of a flow field. Settled lava is nearly",
-                            "free; this mostly caps a single runaway eruption. Default: 6000")
-                    .defineInRange("lavaFlowMaxCells", 6000, 256, 200000);
+                            "free; this mostly caps a single runaway eruption. Default: 12000")
+                    .defineInRange("lavaFlowMaxCells", 12000, 256, 200000);
 
             lavaFlowMaxOps = builder
                     .comment("Budget of cell updates the simulation may perform per sim step, bounding",
                             "server cost near an erupting volcano. Lower = cheaper but lava settles more",
-                            "slowly. Default: 4000")
-                    .defineInRange("lavaFlowMaxOps", 4000, 256, 100000);
+                            "slowly. Default: 8000")
+                    .defineInRange("lavaFlowMaxOps", 8000, 256, 100000);
+
+            // --- Feed & cooling (heat / vent connectivity) ---
+
+            lavaFlowHeatMax = builder
+                    .comment("Maximum heat a lava cell can hold. Cells freeze into rock when heat reaches 0.",
+                            "Higher = flows stay molten longer. Default: 800")
+                    .defineInRange("lavaFlowHeatMax", 800, 4, 4000);
+
+            lavaFlowBaseLoss = builder
+                    .comment("Base heat lost by every lava cell each cooling pass. Default: 1")
+                    .defineInRange("lavaFlowBaseLoss", 1, 0, 40);
+
+            lavaFlowEdgeLoss = builder
+                    .comment("Extra heat lost per open horizontal side (air/replaceable neighbour).",
+                            "Margins cool faster than the buried interior. Default: 1")
+                    .defineInRange("lavaFlowEdgeLoss", 1, 0, 20);
+
+            lavaFlowThinLoss = builder
+                    .comment("Extra heat lost by thin cells (level 1-2). Distal toes crust sooner. Default: 2")
+                    .defineInRange("lavaFlowThinLoss", 2, 0, 40);
+
+            lavaFlowDistalLoss = builder
+                    .comment("Extra heat lost per 4 hops of vent-distance. Far lobes cool before near-vent",
+                            "lava after the eruption ends. Default: 1")
+                    .defineInRange("lavaFlowDistalLoss", 1, 0, 20);
+
+            lavaFlowRefeedRate = builder
+                    .comment("Heat restored each cooling pass to cells still connected to a live vent.",
+                            "Must exceed typical channel loss so the active channel never crusts mid-eruption,",
+                            "but stay below thin+edge+distal toe loss so margins can skin over. Default: 6")
+                    .defineInRange("lavaFlowRefeedRate", 6, 0, 255);
+
+            lavaFlowFeedInterval = builder
+                    .comment("Ticks between vent-connectivity BFS passes that refresh which cells are fed.",
+                            "Default: 20 (once per second)")
+                    .defineInRange("lavaFlowFeedInterval", 20, 1, 200);
+
+            lavaFlowCoolOps = builder
+                    .comment("Budget of cells the heat/freeze pass may process per sim step. Default: 4000")
+                    .defineInRange("lavaFlowCoolOps", 4000, 64, 100000);
 
             builder.pop();
         }
