@@ -6,6 +6,8 @@ import com.axes.tephra.block.VolcanoCoreBlockEntity;
 import com.axes.tephra.block.VolcanoPhase;
 import com.axes.tephra.config.TephraConfig;
 import com.axes.tephra.registry.TephraParticleTypes;
+import com.axes.tephra.runtime.OfflineBudget;
+import com.axes.tephra.runtime.VolcanoRecord;
 import net.minecraft.core.BlockPos;
 import net.minecraft.util.RandomSource;
 import net.minecraft.world.level.Level;
@@ -257,5 +259,62 @@ public class ShieldVolcanoProfile implements VolcanoProfile {
             return true;
         }
         return includeLava && s.is(TephraBlocks.MOLTEN_BASALT_BLOCK.get());
+    }
+
+    @Override
+    public void tickOffline(net.minecraft.server.level.ServerLevel level, VolcanoRecord record, OfflineBudget budget) {
+        record.setPhaseTicks(record.getPhaseTicks() + (int) Math.min(Integer.MAX_VALUE, budget.elapsedTicks()));
+
+        if (record.getPhase() == VolcanoPhase.ERUPTING) {
+            double days = budget.elapsedTicks() / 24000.0;
+            int layers = (int) Math.round(days * TephraConfig.COMMON.offlineLavaLayersPerDay.get() * record.getActivityLevel());
+            layers = Math.min(layers, budget.maxBlockOps() * 4);
+            record.addPendingLavaLayers(layers);
+            record.setAbstractFootprintRadius(record.getAbstractFootprintRadius() + layers / 960.0f);
+        }
+
+        advanceShieldPhaseOffline(record);
+    }
+
+    private void advanceShieldPhaseOffline(VolcanoRecord record) {
+        int erupting = TephraConfig.COMMON.shieldEruptionDuration.get();
+        int dormant = TephraConfig.COMMON.shieldDormantDuration.get();
+        float activity = Math.max(0.5f, record.getActivityLevel());
+
+        switch (record.getPhase()) {
+            case ERUPTING -> {
+                if (record.getPhaseTicks() >= erupting) {
+                    record.setPhase(VolcanoPhase.RECOVERY);
+                    record.setPhaseTicks(0);
+                }
+            }
+            case RECOVERY -> {
+                if (record.getPhaseTicks() >= 1200) {
+                    record.setPhase(VolcanoPhase.DORMANT);
+                    record.setPhaseTicks(0);
+                }
+            }
+            case DORMANT -> {
+                int scaled = Math.max(1200, (int) (dormant / activity));
+                if (record.getPhaseTicks() >= scaled) {
+                    record.setPhase(VolcanoPhase.RUMBLING);
+                    record.setPhaseTicks(0);
+                }
+            }
+            case RUMBLING -> {
+                if (record.getPhaseTicks() >= 1200) {
+                    record.setPhase(VolcanoPhase.ERUPTING);
+                    record.setPhaseTicks(0);
+                }
+            }
+            case ACTIVE -> {
+                if (record.getPhaseTicks() >= 1200) {
+                    record.setPhase(VolcanoPhase.RUMBLING);
+                    record.setPhaseTicks(0);
+                }
+            }
+            default -> {
+            }
+        }
     }
 }

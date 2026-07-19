@@ -67,6 +67,9 @@ public class TephraCommands {
 
                                                             if (level.getBlockEntity(pos) instanceof VolcanoCoreBlockEntity core) {
                                                                 core.setVolcanoType(type);
+                                                                if (level instanceof ServerLevel serverLevel) {
+                                                                    com.axes.tephra.runtime.VolcanoRuntime.registerFromCore(serverLevel, core);
+                                                                }
                                                             }
 
                                                             context.getSource().sendSuccess(() -> Component.literal("Spawned " + typeStr + " volcano at " + pos.toShortString()), true);
@@ -80,6 +83,9 @@ public class TephraCommands {
                         .then(Commands.argument("amount", IntegerArgumentType.integer(1))
                                 .executes(TephraCommands::advanceVolcano)
                         )
+                )
+                .then(Commands.literal("list")
+                        .executes(TephraCommands::listVolcanoes)
                 )
         );
     }
@@ -181,11 +187,40 @@ public class TephraCommands {
             // Generate a random base radius width between 9.0 and 21.0 blocks on creation
             float randomRadius = 9.0f + world.random.nextFloat() * 12.0f;
             coreBe.setCraterBaseRadius(randomRadius);
+            com.axes.tephra.runtime.VolcanoRuntime.registerFromCore(world, coreBe);
 
             source.sendSuccess(() -> Component.literal("§a[Tephra] Incubating Shield Volcano spawned deep below at Y=" + corePos.getY()), true);
             return 1;
         }
         return 0;
+    }
+
+    private static int listVolcanoes(CommandContext<CommandSourceStack> context) {
+        CommandSourceStack source = context.getSource();
+        if (!(source.getLevel() instanceof ServerLevel level)) {
+            source.sendFailure(Component.literal("Server level required."));
+            return 0;
+        }
+
+        var all = com.axes.tephra.runtime.VolcanoRuntime.all(level);
+        if (all.isEmpty()) {
+            source.sendSuccess(() -> Component.literal("§7[Tephra] No registered volcanoes in this dimension."), false);
+            return 1;
+        }
+
+        source.sendSuccess(() -> Component.literal("§6[Tephra] " + all.size() + " volcano(es):"), false);
+        for (var record : all) {
+            BlockPos p = record.getPos();
+            String line = String.format("§e- §b%s §7@ §a%d %d %d §7| phase=§b%s §7| act=§d%.2f §7| influence=§d%.0f §7| pendingLava=§c%d",
+                    record.getType().getSerializedName(),
+                    p.getX(), p.getY(), p.getZ(),
+                    record.getPhase().getSerializedName(),
+                    record.getActivityLevel(),
+                    record.getInfluenceRadius(),
+                    record.getPendingLavaLayers());
+            source.sendSuccess(() -> Component.literal(line), false);
+        }
+        return all.size();
     }
 
     private static int advanceVolcano(CommandContext<CommandSourceStack> context) {

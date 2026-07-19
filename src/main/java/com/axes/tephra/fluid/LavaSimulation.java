@@ -233,6 +233,32 @@ public final class LavaSimulation {
         }
     }
 
+    /**
+     * Spends abstract offline lava budget into tracked vents. Returns units actually injected.
+     * Used by the runtime foundation so unloaded eruptions still contribute when chunks return.
+     */
+    public int injectBonusAtVents(Level level, VolcanoCoreBlockEntity be, int units, int maxCells) {
+        if (units <= 0 || be.getVentSources().isEmpty()) {
+            return 0;
+        }
+        int n = be.getVentSources().size();
+        int base = units / n;
+        int rem = units % n;
+        int spent = 0;
+        int index = 0;
+        for (BlockPos vent : be.getVentSources()) {
+            int add = base + (index < rem ? 1 : 0);
+            index++;
+            if (add <= 0 || !level.isLoaded(vent)) {
+                continue;
+            }
+            long key = vent.asLong();
+            setLevel(level, key, levels.get(key) + add, maxCells);
+            spent += add;
+        }
+        return spent;
+    }
+
     // --- Injection -----------------------------------------------------------------------
 
     /**

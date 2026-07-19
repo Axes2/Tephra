@@ -2,17 +2,24 @@ package com.axes.tephra.block;
 
 import com.axes.tephra.block.profile.CinderConeProfile;
 import com.axes.tephra.block.profile.VolcanoProfile;
+import com.axes.tephra.config.TephraConfig;
+import com.axes.tephra.runtime.OfflineBudget;
+import com.axes.tephra.runtime.VolcanoProfiles;
+import com.axes.tephra.runtime.VolcanoRecord;
+import com.axes.tephra.runtime.VolcanoRuntime;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.HolderLookup;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.protocol.game.ClientboundStopSoundPacket;
 import net.minecraft.sounds.SoundSource;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
+
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.Set;
@@ -26,6 +33,12 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
     private float craterBaseRadius = 12.0f;
     private long lastRecordedGameTime = 0L;
     private float eruptionIntensity = 1.0f;
+    private long personalitySeed = 0L;
+    private float activityLevel = 1.0f;
+    /** Abstract lava units from offline sim; injected into LavaSimulation while erupting. */
+    private int pendingEffusiveLayers = 0;
+    /** Ash budget from offline; painted on a normal tick (never in onLoad). */
+    private int pendingAshLayers = 0;
 
     // Every molten basalt source block this volcano has opened (vent pond, flank breakouts).
     // Persisted so an eruption interrupted by a save/reload can still be quenched.
@@ -47,6 +60,8 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
         super(net.minecraft.core.registries.BuiltInRegistries.BLOCK_ENTITY_TYPE.get(
                 net.minecraft.resources.ResourceLocation.fromNamespaceAndPath(com.axes.tephra.Tephra.MODID, "volcano_core_be")
         ), pos, state);
+        this.personalitySeed = pos.asLong();
+        this.activityLevel = VolcanoRecord.activityFromSeed(this.personalitySeed);
     }
 
     public VolcanoType getVolcanoType() {
@@ -55,15 +70,15 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
 
     public void setVolcanoType(VolcanoType type) {
         this.volcanoType = type;
-
-        // Lazy-load profile switches
-        if (type == VolcanoType.CINDER_CONE) {
-            this.activeProfile = new com.axes.tephra.block.profile.CinderConeProfile();
-        } else if (type == VolcanoType.SHIELD) {
-            this.activeProfile = new com.axes.tephra.block.profile.ShieldVolcanoProfile();
-        }
-
+        this.activeProfile = VolcanoProfiles.forType(type);
         setChanged();
+        if (level instanceof ServerLevel serverLevel) {
+            VolcanoRuntime.registerFromCore(serverLevel, this);
+        }
+    }
+
+    public VolcanoProfile getActiveProfile() {
+        return this.activeProfile;
     }
 
     public int getPhaseTicks() { return this.phaseTicks; }
@@ -77,6 +92,27 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
     public void setClientShakeTimer(int ticks) { this.clientShakeTimer = ticks; }
     public float getEruptionIntensity() { return this.eruptionIntensity; }
     public void setEruptionIntensity(float intensity) { this.eruptionIntensity = intensity; }
+    public long getPersonalitySeed() { return this.personalitySeed; }
+    public void setPersonalitySeed(long personalitySeed) {
+        this.personalitySeed = personalitySeed;
+        this.activityLevel = VolcanoRecord.activityFromSeed(personalitySeed);
+    }
+    public float getActivityLevel() { return this.activityLevel; }
+    public void setActivityLevel(float activityLevel) { this.activityLevel = activityLevel; }
+    public int getPendingEffusiveLayers() { return this.pendingEffusiveLayers; }
+    public void setPendingEffusiveLayers(int pendingEffusiveLayers) {
+        this.pendingEffusiveLayers = Math.max(0, pendingEffusiveLayers);
+    }
+    public void addPendingEffusiveLayers(int delta) {
+        this.pendingEffusiveLayers = Math.max(0, this.pendingEffusiveLayers + delta);
+    }
+    public int getPendingAshLayers() { return this.pendingAshLayers; }
+    public void setPendingAshLayers(int pendingAshLayers) {
+        this.pendingAshLayers = Math.max(0, pendingAshLayers);
+    }
+    public void addPendingAshLayers(int delta) {
+        this.pendingAshLayers = Math.max(0, this.pendingAshLayers + delta);
+    }
 
     public void trackVentSource(BlockPos pos) {
         this.ventSources.add(pos.immutable());
@@ -153,22 +189,42 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
     public void onLoad() {
         super.onLoad();
 
-        // Prevent catch-up execution on client threads or during initial world birth
-        if (this.level == null || this.level.isClientSide || this.lastRecordedGameTime == 0L) {
-            this.lastRecordedGameTime = this.level != null ? this.level.getGameTime() : 0L;
+        if (this.level == null || this.level.isClientSide) {
             return;
         }
 
-        // The chunk is still loading here, so we must never mutate blocks (that is what
-        // caused the cascading lighting-engine crashes). We only fast-forward the phase
-        // clock; the profiles' block work resumes safely on the first real tick.
-        long elapsedTicks = this.level.getGameTime() - this.lastRecordedGameTime;
-        if (elapsedTicks > 100) {
-            this.phaseTicks += (int) Math.min(elapsedTicks, 24000L);
+        ServerLevel serverLevel = (ServerLevel) this.level;
+        VolcanoRecord record = VolcanoRuntime.registerFromCore(serverLevel, this);
+        VolcanoRuntime.syncCoreFromRecord(this, record);
+
+        long now = serverLevel.getGameTime();
+        if (this.lastRecordedGameTime == 0L) {
+            this.lastRecordedGameTime = now;
+            record.setLastSimGameTime(now);
+            VolcanoRuntime.data(serverLevel).markDirty();
+            return;
         }
 
-        // Synchronize the timestamp clock to the present moment
-        this.lastRecordedGameTime = this.level.getGameTime();
+        // Never mutate blocks here (lighting-engine crash risk). Coarse clocks + pending only.
+        long elapsedTicks = now - this.lastRecordedGameTime;
+        int maxCatchUp = TephraConfig.COMMON.offlineMaxCatchUpTicks.get();
+        if (elapsedTicks > 100) {
+            long catchUpTicks = Math.min(elapsedTicks, maxCatchUp);
+            VolcanoRuntime.advanceOffline(
+                    serverLevel,
+                    record,
+                    OfflineBudget.of(catchUpTicks, TephraConfig.COMMON.offlineMaxBlockOpsPerVolcano.get())
+            );
+            VolcanoRuntime.syncCoreFromRecord(this, record);
+            this.activeProfile.applyPendingBudgets(serverLevel, this, record);
+            this.pendingAshLayers += record.getPendingAshLayers();
+            record.setPendingAshLayers(0);
+            this.phaseTicks = record.getPhaseTicks();
+        }
+
+        this.lastRecordedGameTime = now;
+        record.setLastSimGameTime(now);
+        VolcanoRuntime.data(serverLevel).markDirty();
     }
 
     public static void tick(Level level, BlockPos pos, BlockState state, VolcanoCoreBlockEntity blockEntity) {
@@ -224,6 +280,7 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
 
         // --- SERVER SIDE ---
         blockEntity.phaseTicks++;
+        blockEntity.lastRecordedGameTime = level.getGameTime();
 
         // Delegate profile actions (Deposition & Audio Loops)
         blockEntity.activeProfile.tickServer(level, pos, state, currentPhase, blockEntity);
@@ -243,10 +300,18 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
 
         if (erupting) {
             com.axes.tephra.fluid.LavaFlowEngine.tick(level, pos, blockEntity, true);
+            spendPendingEffusiveIntoSim(level, blockEntity);
         } else if (blockEntity.lavaSim != null && !blockEntity.lavaSim.isEmpty()) {
             // Post-eruption die-down: no inject/relax, only feed+heat+freeze until empty.
             com.axes.tephra.fluid.LavaFlowEngine.tick(level, pos, blockEntity, false);
             blockEntity.setChanged();
+        }
+
+        if (level instanceof ServerLevel serverLevel && level.getGameTime() % 40 == 0) {
+            VolcanoRecord record = VolcanoRuntime.registerFromCore(serverLevel, blockEntity);
+            VolcanoRuntime.syncRecordFromCore(record, blockEntity);
+            record.setLastSimGameTime(level.getGameTime());
+            VolcanoRuntime.data(serverLevel).markDirty();
         }
 
         // STOCHASTIC OPERATIONAL DIAGNOSTICS TELEMETRY HUD
@@ -273,12 +338,14 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
                         soundPulseIndicator);
             } else {
                 // Standard eruption/dormancy debugging output hud layout
-                hudText = String.format("§6[Volcano Debug] §ePhase: §b%s §e| §eProgress: §a%d§7/§c%d Ticks §e| §bFootprint σ: §d%.1f",
+                hudText = String.format("§6[Volcano Debug] §ePhase: §b%s §e| §eProgress: §a%d§7/§c%d §e| §bσ: §d%.1f §e| §bact: §d%.2f §e| §bsim: §d%d",
                         currentPhase.getSerializedName().toUpperCase(),
                         blockEntity.phaseTicks,
                         currentPhase == VolcanoPhase.DORMANT ? blockEntity.targetDormantTicks :
                                 (currentPhase == VolcanoPhase.ERUPTING ? 2400 : 1200),
-                        blockEntity.getCraterBaseRadius());
+                        blockEntity.getCraterBaseRadius(),
+                        blockEntity.getActivityLevel(),
+                        blockEntity.lavaSim != null ? blockEntity.lavaSim.cellCount() : 0);
             }
 
             // Distribute text to all tracking players in local boundaries
@@ -289,15 +356,15 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
             }
         }
 
-        // Clock State Transitions Machine
+        float activity = Math.max(0.5f, blockEntity.activityLevel);
         // Clock State Transitions Machine
         switch (currentPhase) {
             case INCUBATING -> {
                 // Handled directly inside the profile strategy class to allow custom birth variations!
             }
             case DORMANT -> {
-                // Queries the active profile for the duration, defaulting to the dynamically generated targetDormantTicks
                 int dormantDuration = blockEntity.activeProfile.getPhaseDurationTicks(VolcanoPhase.DORMANT, level.random, blockEntity.targetDormantTicks);
+                dormantDuration = Math.max(1200, (int) (dormantDuration / activity));
                 if (blockEntity.phaseTicks >= dormantDuration) {
                     if (level.random.nextFloat() < 0.60f) {
                         blockEntity.setPhase(level, pos, state, VolcanoPhase.ACTIVE);
@@ -308,6 +375,7 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
             }
             case ACTIVE -> {
                 int activeDuration = blockEntity.activeProfile.getPhaseDurationTicks(VolcanoPhase.ACTIVE, level.random, 1200);
+                activeDuration = Math.max(600, (int) (activeDuration / activity));
                 if (blockEntity.phaseTicks >= activeDuration) {
                     if (level.random.nextFloat() < 0.50f) {
                         blockEntity.setPhase(level, pos, state, VolcanoPhase.RUMBLING);
@@ -315,6 +383,8 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
                         blockEntity.setPhase(level, pos, state, VolcanoPhase.DORMANT);
                         blockEntity.targetDormantTicks = 2400 + level.random.nextInt(3600);
                     }
+                } else if (shouldPulseMinorEvent(level, blockEntity)) {
+                    blockEntity.setClientShakeTimer(20);
                 }
             }
             case RUMBLING -> {
@@ -333,11 +403,42 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
                 int recoveryDuration = blockEntity.activeProfile.getPhaseDurationTicks(VolcanoPhase.RECOVERY, level.random, 1200);
                 if (blockEntity.phaseTicks >= recoveryDuration) {
                     blockEntity.setPhase(level, pos, state, VolcanoPhase.DORMANT);
-                    blockEntity.targetDormantTicks = 3600 + level.random.nextInt(4800);
+                    if (level instanceof ServerLevel serverLevel) {
+                        blockEntity.targetDormantTicks = VolcanoRuntime.scaledMajorIntervalTicks(
+                                VolcanoRuntime.find(serverLevel, pos).orElseGet(() -> {
+                                    VolcanoRecord r = new VolcanoRecord(pos, blockEntity.volcanoType, VolcanoPhase.DORMANT, blockEntity.personalitySeed);
+                                    r.setActivityLevel(blockEntity.activityLevel);
+                                    return r;
+                                }));
+                    } else {
+                        blockEntity.targetDormantTicks = 3600 + level.random.nextInt(4800);
+                    }
                 }
             }
 
         }
+    }
+
+    private static void spendPendingEffusiveIntoSim(Level level, VolcanoCoreBlockEntity blockEntity) {
+        int pending = blockEntity.getPendingEffusiveLayers();
+        if (pending <= 0 || blockEntity.getVentSources().isEmpty()) {
+            return;
+        }
+        int chunk = Math.min(pending, TephraConfig.COMMON.lavaFlowEruptionRate.get() * 4);
+        int spent = blockEntity.getLavaSimulation().injectBonusAtVents(
+                level, blockEntity, chunk, TephraConfig.COMMON.lavaFlowMaxCells.get());
+        if (spent > 0) {
+            blockEntity.setPendingEffusiveLayers(pending - spent);
+            blockEntity.setChanged();
+        }
+    }
+
+    private static boolean shouldPulseMinorEvent(Level level, VolcanoCoreBlockEntity blockEntity) {
+        if (level.getGameTime() % 24000 != 0) {
+            return false;
+        }
+        double chance = TephraConfig.COMMON.minorEventChancePerDay.get() * blockEntity.activityLevel;
+        return level.random.nextDouble() < chance;
     }
 
     public void setPhase(Level level, BlockPos pos, BlockState state, VolcanoPhase phase) {
@@ -346,6 +447,14 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
         level.setBlock(pos, state.setValue(VolcanoCoreBlock.PHASE, phase), 3);
         this.phaseTicks = 0;
         setChanged();
+
+        if (level instanceof ServerLevel serverLevel) {
+            VolcanoRuntime.find(serverLevel, pos).ifPresent(record -> {
+                record.setPhase(phase);
+                record.setPhaseTicks(0);
+                VolcanoRuntime.data(serverLevel).markDirty();
+            });
+        }
 
         if (oldPhase == VolcanoPhase.ERUPTING && !level.isClientSide) {
             ClientboundStopSoundPacket stopPacket = new ClientboundStopSoundPacket(
@@ -391,6 +500,11 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
         if (this.lavaSim != null && !this.lavaSim.isEmpty()) {
             tag.put("LavaSim", this.lavaSim.save());
         }
+        tag.putLong("PersonalitySeed", this.personalitySeed);
+        tag.putFloat("ActivityLevel", this.activityLevel);
+        tag.putInt("PendingEffusiveLayers", this.pendingEffusiveLayers);
+        tag.putInt("PendingAshLayers", this.pendingAshLayers);
+        tag.putFloat("EruptionIntensity", this.eruptionIntensity);
     }
 
     @Override
@@ -420,10 +534,26 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
             String typeName = tag.getString("VolcanoType");
             for (VolcanoType type : VolcanoType.values()) {
                 if (type.getSerializedName().equalsIgnoreCase(typeName)) {
-                    setVolcanoType(type);
+                    this.volcanoType = type;
+                    this.activeProfile = VolcanoProfiles.forType(type);
                     break;
                 }
             }
+        }
+        if (tag.contains("PersonalitySeed")) {
+            this.personalitySeed = tag.getLong("PersonalitySeed");
+        } else {
+            this.personalitySeed = this.worldPosition.asLong();
+        }
+        if (tag.contains("ActivityLevel")) {
+            this.activityLevel = tag.getFloat("ActivityLevel");
+        } else {
+            this.activityLevel = VolcanoRecord.activityFromSeed(this.personalitySeed);
+        }
+        this.pendingEffusiveLayers = tag.getInt("PendingEffusiveLayers");
+        this.pendingAshLayers = tag.getInt("PendingAshLayers");
+        if (tag.contains("EruptionIntensity")) {
+            this.eruptionIntensity = tag.getFloat("EruptionIntensity");
         }
     }
 }

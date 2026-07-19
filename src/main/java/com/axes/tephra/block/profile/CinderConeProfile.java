@@ -4,10 +4,14 @@ import com.axes.tephra.block.AshLayerBlock;
 import com.axes.tephra.block.TephraBlocks;
 import com.axes.tephra.block.VolcanoCoreBlockEntity;
 import com.axes.tephra.block.VolcanoPhase;
+import com.axes.tephra.config.TephraConfig;
+import com.axes.tephra.runtime.OfflineBudget;
+import com.axes.tephra.runtime.VolcanoRecord;
 import net.minecraft.core.BlockPos;
 import net.minecraft.sounds.SoundSource;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.util.Mth;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
@@ -21,6 +25,95 @@ public class CinderConeProfile implements VolcanoProfile {
     /** Maximum number of simultaneously active breakout vents. Kept low so each eruption reads
      *  as a few distinct tongues of lava rather than a flood on every flank at once. */
     private static final int MAX_BREAKOUTS = 2;
+
+    @Override
+    public void tickOffline(ServerLevel level, VolcanoRecord record, OfflineBudget budget) {
+        int elapsed = (int) Math.min(Integer.MAX_VALUE, budget.elapsedTicks());
+        record.setPhaseTicks(record.getPhaseTicks() + elapsed);
+
+        if (record.getPhase() == VolcanoPhase.INCUBATING) {
+            int rise = Math.min(budget.maxBlockOps(), elapsed / 200);
+            record.setPlumeHeight(record.getPlumeHeight() + rise);
+        } else if (record.getPhase() == VolcanoPhase.ERUPTING) {
+            double days = budget.elapsedTicks() / 24000.0;
+            int ash = (int) Math.round(days * TephraConfig.COMMON.offlineAshLayersPerDay.get() * record.getActivityLevel());
+            ash = Math.min(ash, budget.maxBlockOps());
+            record.addPendingAshLayers(ash);
+            record.setAbstractFootprintRadius(record.getAbstractFootprintRadius() + ash / 64.0f);
+        }
+
+        advanceCinderPhaseOffline(record);
+    }
+
+    private void advanceCinderPhaseOffline(VolcanoRecord record) {
+        float activity = Math.max(0.5f, record.getActivityLevel());
+        switch (record.getPhase()) {
+            case ERUPTING -> {
+                if (record.getPhaseTicks() >= 2400) {
+                    record.setPhase(VolcanoPhase.RECOVERY);
+                    record.setPhaseTicks(0);
+                }
+            }
+            case RECOVERY -> {
+                if (record.getPhaseTicks() >= 1200) {
+                    record.setPhase(VolcanoPhase.DORMANT);
+                    record.setPhaseTicks(0);
+                }
+            }
+            case DORMANT -> {
+                int scaled = Math.max(1200, (int) (3600 / activity));
+                if (record.getPhaseTicks() >= scaled) {
+                    record.setPhase(VolcanoPhase.RUMBLING);
+                    record.setPhaseTicks(0);
+                }
+            }
+            case RUMBLING -> {
+                if (record.getPhaseTicks() >= 1200) {
+                    record.setPhase(VolcanoPhase.ERUPTING);
+                    record.setPhaseTicks(0);
+                }
+            }
+            case ACTIVE -> {
+                if (record.getPhaseTicks() >= 1200) {
+                    record.setPhase(VolcanoPhase.RUMBLING);
+                    record.setPhaseTicks(0);
+                }
+            }
+            case INCUBATING -> {
+            }
+        }
+    }
+
+    /**
+     * Light ash paint deferred from offline catch-up — safe to call from a normal server tick.
+     */
+    public void paintPendingAsh(Level level, VolcanoCoreBlockEntity blockEntity) {
+        int ash = blockEntity.getPendingAshLayers();
+        if (ash <= 0 || level.isClientSide) {
+            return;
+        }
+        int ops = Math.min(ash, TephraConfig.COMMON.offlineMaxBlockOpsPerVolcano.get());
+        BlockPos origin = blockEntity.getBlockPos();
+        float radius = Math.max(4.0f, blockEntity.getCraterBaseRadius() * 2.0f);
+        for (int i = 0; i < ops; i++) {
+            double angle = level.random.nextDouble() * Math.PI * 2;
+            double dist = level.random.nextDouble() * radius;
+            int x = origin.getX() + (int) Math.round(Math.cos(angle) * dist);
+            int z = origin.getZ() + (int) Math.round(Math.sin(angle) * dist);
+            BlockPos surface = level.getHeightmapPos(Heightmap.Types.WORLD_SURFACE, new BlockPos(x, origin.getY(), z));
+            if (!level.isLoaded(surface)) {
+                continue;
+            }
+            BlockState existing = level.getBlockState(surface);
+            if (existing.is(TephraBlocks.ASH_LAYER.get())) {
+                int layers = Math.min(8, existing.getValue(AshLayerBlock.LAYERS) + 1);
+                level.setBlock(surface, existing.setValue(AshLayerBlock.LAYERS, layers), 2);
+            } else if (existing.canBeReplaced() || existing.isAir()) {
+                level.setBlock(surface, TephraBlocks.ASH_LAYER.get().defaultBlockState(), 2);
+            }
+        }
+        blockEntity.setPendingAshLayers(Math.max(0, ash - ops));
+    }
 
     @Override
     public void tickClient(Level level, BlockPos pos, BlockState state, VolcanoPhase phase, VolcanoCoreBlockEntity blockEntity) {
@@ -229,6 +322,10 @@ public class CinderConeProfile implements VolcanoProfile {
 
     @Override
     public void tickServer(Level level, BlockPos pos, BlockState state, VolcanoPhase phase, VolcanoCoreBlockEntity blockEntity) {
+        if (blockEntity.getPendingAshLayers() > 0 && level.getGameTime() % 10 == 0) {
+            paintPendingAsh(level, blockEntity);
+        }
+
         if (phase == VolcanoPhase.INCUBATING) {
             BlockPos surfacePos = level.getHeightmapPos(Heightmap.Types.WORLD_SURFACE, pos);
             int ticksPerStep = 1200;
