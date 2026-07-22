@@ -39,6 +39,10 @@ public interface VolcanoProfile {
     }
 
     default float getInfluenceRadius(VolcanoCoreBlockEntity blockEntity) {
+        float override = blockEntity.getInfluenceRadiusOverride();
+        if (override > 0.0f) {
+            return override;
+        }
         float mult = TephraConfig.COMMON.influenceRadiusMultiplier.get().floatValue();
         return Math.max(32.0f, blockEntity.getCraterBaseRadius() * mult);
     }

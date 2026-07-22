@@ -1,16 +1,17 @@
 package com.axes.tephra.command;
 
 import com.mojang.brigadier.CommandDispatcher;
+import com.mojang.brigadier.arguments.FloatArgumentType;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.context.CommandContext;
 import com.axes.tephra.Tephra;
+import com.axes.tephra.block.ShieldEruptionMode;
 import com.axes.tephra.block.VolcanoCoreBlock;
 import com.axes.tephra.block.VolcanoCoreBlockEntity;
 import com.axes.tephra.block.VolcanoPhase;
 import com.axes.tephra.block.VolcanoType;
 import com.axes.tephra.block.TephraBlocks;
-import com.axes.tephra.worldgen.VolcanoSpawnValidator;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.commands.SharedSuggestionProvider;
@@ -28,7 +29,6 @@ import net.minecraft.world.phys.HitResult;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.neoforge.event.RegisterCommandsEvent;
-import com.mojang.brigadier.arguments.StringArgumentType;
 
 import java.util.Optional;
 
@@ -49,36 +49,55 @@ public class TephraCommands {
                                     }
                                     return builder.buildFuture();
                                 })
-                                .executes(TephraCommands::setVolcanoPhase)
-                        )
-                )
-                                .then(Commands.literal("spawn")
-                                        .then(Commands.argument("pos", BlockPosArgument.blockPos())
-                                                .then(Commands.argument("type", StringArgumentType.word())
-                                                        .suggests((context, builder) -> SharedSuggestionProvider.suggest(new String[]{"cinder_cone", "shield"}, builder))
-                                                        .executes(context -> {
-                                                            BlockPos pos = BlockPosArgument.getLoadedBlockPos(context, "pos");
-                                                            String typeStr = StringArgumentType.getString(context, "type");
-
-                                                            VolcanoType type = typeStr.equalsIgnoreCase("shield") ? VolcanoType.SHIELD : VolcanoType.CINDER_CONE;
-
-                                                            Level level = context.getSource().getLevel();
-                                                            level.setBlockAndUpdate(pos, TephraBlocks.VOLCANO_CORE.get().defaultBlockState());
-
-                                                            if (level.getBlockEntity(pos) instanceof VolcanoCoreBlockEntity core) {
-                                                                core.setVolcanoType(type);
-                                                                if (level instanceof ServerLevel serverLevel) {
-                                                                    com.axes.tephra.runtime.VolcanoRuntime.registerFromCore(serverLevel, core);
-                                                                }
-                                                            }
-
-                                                            context.getSource().sendSuccess(() -> Component.literal("Spawned " + typeStr + " volcano at " + pos.toShortString()), true);
-                                                            return 1;
-                                                        })
-                                                )
+                                .executes(ctx -> setVolcanoPhase(ctx, null, null))
+                                .then(Commands.literal("summit")
+                                        .executes(ctx -> setVolcanoPhase(ctx, ShieldEruptionMode.SUMMIT, null))
+                                        .then(Commands.argument("intensity", FloatArgumentType.floatArg(1.0f, 10.0f))
+                                                .executes(ctx -> setVolcanoPhase(ctx, ShieldEruptionMode.SUMMIT,
+                                                        FloatArgumentType.getFloat(ctx, "intensity")))
                                         )
                                 )
+                                .then(Commands.literal("flank")
+                                        .executes(ctx -> setVolcanoPhase(ctx, ShieldEruptionMode.FLANK, null))
+                                        .then(Commands.argument("intensity", FloatArgumentType.floatArg(1.0f, 10.0f))
+                                                .executes(ctx -> setVolcanoPhase(ctx, ShieldEruptionMode.FLANK,
+                                                        FloatArgumentType.getFloat(ctx, "intensity")))
+                                        )
+                                )
+                                .then(Commands.literal("intensity")
+                                        .then(Commands.argument("intensity", FloatArgumentType.floatArg(1.0f, 10.0f))
+                                                .executes(ctx -> setVolcanoPhase(ctx, null,
+                                                        FloatArgumentType.getFloat(ctx, "intensity")))
+                                        )
+                                )
+                        )
+                )
+                .then(Commands.literal("spawn")
+                        .then(Commands.argument("pos", BlockPosArgument.blockPos())
+                                .then(Commands.argument("type", StringArgumentType.word())
+                                        .suggests((context, builder) -> SharedSuggestionProvider.suggest(new String[]{"cinder_cone", "shield"}, builder))
+                                        .executes(context -> {
+                                            BlockPos pos = BlockPosArgument.getLoadedBlockPos(context, "pos");
+                                            String typeStr = StringArgumentType.getString(context, "type");
 
+                                            VolcanoType type = typeStr.equalsIgnoreCase("shield") ? VolcanoType.SHIELD : VolcanoType.CINDER_CONE;
+
+                                            Level level = context.getSource().getLevel();
+                                            level.setBlockAndUpdate(pos, TephraBlocks.VOLCANO_CORE.get().defaultBlockState());
+
+                                            if (level.getBlockEntity(pos) instanceof VolcanoCoreBlockEntity core) {
+                                                core.setVolcanoType(type);
+                                                if (level instanceof ServerLevel serverLevel) {
+                                                    com.axes.tephra.runtime.VolcanoRuntime.registerFromCore(serverLevel, core);
+                                                }
+                                            }
+
+                                            context.getSource().sendSuccess(() -> Component.literal("Spawned " + typeStr + " volcano at " + pos.toShortString()), true);
+                                            return 1;
+                                        })
+                                )
+                        )
+                )
                 .then(Commands.literal("advance")
                         .then(Commands.argument("amount", IntegerArgumentType.integer(1))
                                 .executes(TephraCommands::advanceVolcano)
@@ -90,10 +109,6 @@ public class TephraCommands {
         );
     }
 
-    /**
-     * Helper Method: Attempts to find targeted volcano via crosshairs,
-     * falling back to a 150-block proximity search if buried or missed.
-     */
     private static java.util.Optional<BlockPos> findTargetVolcano(ServerPlayer player) {
         HitResult hit = player.pick(128.0, 1.0F, false);
         if (hit.getType() == HitResult.Type.BLOCK) {
@@ -102,7 +117,6 @@ public class TephraCommands {
                 return java.util.Optional.of(lookPos);
             }
 
-            // Trace down from surface at look position
             BlockPos surfacePos = player.level().getHeightmapPos(Heightmap.Types.WORLD_SURFACE, lookPos);
             for (int y = surfacePos.getY(); y >= player.level().getMinBuildHeight(); y--) {
                 BlockPos checkPos = new BlockPos(lookPos.getX(), y, lookPos.getZ());
@@ -112,10 +126,9 @@ public class TephraCommands {
             }
         }
 
-        // ACCESSIBLE RADIAL SEARCH: Scan loaded chunks surrounding the player for the core
         ServerLevel serverLevel = player.serverLevel();
         BlockPos playerPos = player.blockPosition();
-        int chunkRadius = 6; // Scans an 13x13 chunk grid area (~200 block radius)
+        int chunkRadius = 6;
 
         int centerChunkX = playerPos.getX() >> 4;
         int centerChunkZ = playerPos.getZ() >> 4;
@@ -128,14 +141,11 @@ public class TephraCommands {
                 int cx = centerChunkX + xOffset;
                 int cz = centerChunkZ + zOffset;
 
-                // Convert chunk coordinates into a packed block position at the center of that chunk
                 BlockPos chunkCenterPos = new BlockPos((cx << 4) + 8, playerPos.getY(), (cz << 4) + 8);
 
-                // FIX: Use the official public Level API to check if a chunk is loaded and ticking blocks safely
                 if (serverLevel.shouldTickBlocksAt(chunkCenterPos)) {
                     net.minecraft.world.level.chunk.LevelChunk chunk = serverLevel.getChunk(cx, cz);
 
-                    // Direct access to the public block entity map inside the loaded chunk memory
                     for (BlockEntity entity : chunk.getBlockEntities().values()) {
                         if (entity instanceof VolcanoCoreBlockEntity) {
                             double distSq = entity.getBlockPos().distToCenterSqr(playerPos.getX(), playerPos.getY(), playerPos.getZ());
@@ -150,49 +160,6 @@ public class TephraCommands {
         }
 
         return java.util.Optional.ofNullable(closestVolcano);
-    }
-
-    private static int spawnVolcano(CommandContext<CommandSourceStack> context) {
-        CommandSourceStack source = context.getSource();
-        if (!(source.getEntity() instanceof ServerPlayer player)) {
-            source.sendFailure(Component.literal("This command must be executed by a player."));
-            return 0;
-        }
-
-        HitResult hit = player.pick(128.0, 1.0F, false);
-        BlockPos targetPos = hit.getType() == HitResult.Type.BLOCK ? ((BlockHitResult) hit).getBlockPos().above() : player.blockPosition();
-
-        ServerLevel world = player.serverLevel();
-        BlockPos surfacePos = world.getHeightmapPos(Heightmap.Types.WORLD_SURFACE, targetPos);
-
-        if (!VolcanoSpawnValidator.isSafeSpawningLocation(world, surfacePos)) {
-            source.sendFailure(Component.literal("§c[Tephra] Cannot spawn volcano here: Massive subterranean cavern detected!"));
-            return 0;
-        }
-
-        BlockPos corePos = surfacePos.below(90);
-        BlockState state = TephraBlocks.VOLCANO_CORE.get().defaultBlockState()
-                .setValue(VolcanoCoreBlock.PHASE, VolcanoPhase.INCUBATING);
-
-        world.setBlock(corePos, state, 3);
-
-        // ... (inside spawnVolcano method)
-
-        if (world.getBlockEntity(corePos) instanceof VolcanoCoreBlockEntity coreBe) {
-            // CHANGE: Swap from CINDER_CONE to SHIELD for testing
-            coreBe.setVolcanoType(VolcanoType.SHIELD);
-            coreBe.setPhaseTicks(0);
-            coreBe.setPlumeHeight(1);
-
-            // Generate a random base radius width between 9.0 and 21.0 blocks on creation
-            float randomRadius = 9.0f + world.random.nextFloat() * 12.0f;
-            coreBe.setCraterBaseRadius(randomRadius);
-            com.axes.tephra.runtime.VolcanoRuntime.registerFromCore(world, coreBe);
-
-            source.sendSuccess(() -> Component.literal("§a[Tephra] Incubating Shield Volcano spawned deep below at Y=" + corePos.getY()), true);
-            return 1;
-        }
-        return 0;
     }
 
     private static int listVolcanoes(CommandContext<CommandSourceStack> context) {
@@ -246,13 +213,18 @@ public class TephraCommands {
         return 0;
     }
 
-    private static int setVolcanoPhase(CommandContext<CommandSourceStack> context) {
+    private static int setVolcanoPhase(CommandContext<CommandSourceStack> context,
+                                       ShieldEruptionMode modeOverride,
+                                       Float intensityOverride) {
         CommandSourceStack source = context.getSource();
         String phaseStr = StringArgumentType.getString(context, "phase");
 
         VolcanoPhase chosenPhase = null;
         for (VolcanoPhase phase : VolcanoPhase.values()) {
-            if (phase.getSerializedName().equalsIgnoreCase(phaseStr)) { chosenPhase = phase; break; }
+            if (phase.getSerializedName().equalsIgnoreCase(phaseStr)) {
+                chosenPhase = phase;
+                break;
+            }
         }
 
         if (chosenPhase == null) {
@@ -272,8 +244,27 @@ public class TephraCommands {
             BlockEntity be = player.level().getBlockEntity(pos);
 
             if (be instanceof VolcanoCoreBlockEntity coreBe) {
-                coreBe.setPhase(player.level(), pos, state, chosenPhase);
-                source.sendSuccess(() -> Component.literal("§a[Tephra] Volcano forced into: §b" + phaseStr.toUpperCase()), true);
+                boolean shieldErupting = chosenPhase == VolcanoPhase.ERUPTING
+                        && coreBe.getVolcanoType() == VolcanoType.SHIELD;
+                if (shieldErupting) {
+                    coreBe.setPhase(player.level(), pos, state, chosenPhase, modeOverride, intensityOverride);
+                    String modeLabel = coreBe.getShieldEruptionMode().getSerializedName();
+                    float intensity = coreBe.getEruptionIntensity();
+                    String rift = coreBe.getShieldEruptionMode() == ShieldEruptionMode.FLANK
+                            ? String.format(" §7| riftYaw=§e%.2f", coreBe.getRiftYaw())
+                            : "";
+                    source.sendSuccess(() -> Component.literal(String.format(
+                            "§a[Tephra] Shield forced into §bERUPTING §7| mode=§b%s §7| intensity=§d%.1f%s",
+                            modeLabel, intensity, rift)), true);
+                } else {
+                    if (modeOverride != null || intensityOverride != null) {
+                        source.sendFailure(Component.literal(
+                                "Mode/intensity overrides only apply when setting a shield volcano to erupting."));
+                        return 0;
+                    }
+                    coreBe.setPhase(player.level(), pos, state, chosenPhase);
+                    source.sendSuccess(() -> Component.literal("§a[Tephra] Volcano forced into: §b" + phaseStr.toUpperCase()), true);
+                }
                 return 1;
             }
         }

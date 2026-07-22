@@ -2,7 +2,6 @@
   "itemGroup.tephra": "Example Mod Tab",
   "block.tephra.example_block": "Example Block",
   "item.tephra.example_item": "Example Item",
-
   "tephra.configuration.title": "Tephra Configs",
   "tephra.configuration.section.tephra.common.toml": "Tephra Configs",
   "tephra.configuration.section.tephra.common.toml.title": "Tephra Configs",
@@ -10,10 +9,13 @@
   "tephra.configuration.logDirtBlock": "Log Dirt Block",
   "tephra.configuration.magicNumberIntroduction": "Magic Number Text",
   "tephra.configuration.magicNumber": "Magic Number",
-
   "block.tephra.molten_basalt": "Molten Basalt",
   "fluid_type.tephra.molten_basalt": "Molten Basalt",
-
   "subtitles.tephra.volcano_rumble": "Volcano rumbles ominously",
-  "subtitles.tephra.volcano_erupt": "Volcano erupts violently"
+  "subtitles.tephra.volcano_erupt": "Volcano erupts violently",
+  "block.tephra.sulfur_ore": "Sulfur Ore",
+  "block.tephra.deepslate_sulfur_ore": "Deepslate Sulfur Ore",
+  "block.tephra.sulfur_crust": "Sulfur Crust",
+  "item.tephra.sulfur": "Sulfur",
+  "structure.tephra.shield_volcano": "Shield Volcano"
 }

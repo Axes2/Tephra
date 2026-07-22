@@ -2,10 +2,12 @@ package com.axes.tephra.fluid;
 
 import com.axes.tephra.block.LayeredBasaltBlock;
 import com.axes.tephra.block.MoltenCinderBlock;
+import com.axes.tephra.block.ShieldEruptionMode;
 import com.axes.tephra.block.TephraBlocks;
 import com.axes.tephra.block.VolcanoCoreBlockEntity;
 import com.axes.tephra.block.VolcanoType;
 import com.axes.tephra.config.TephraConfig;
+import com.axes.tephra.registry.TephraParticleTypes;
 import it.unimi.dsi.fastutil.longs.Long2IntMap;
 import it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap;
 import it.unimi.dsi.fastutil.longs.LongArrayList;
@@ -16,6 +18,7 @@ import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.nbt.CompoundTag;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.tags.FluidTags;
 import net.minecraft.util.Mth;
 import net.minecraft.world.level.Level;
@@ -40,13 +43,16 @@ import net.minecraft.world.level.block.state.BlockState;
  *       special "rise" heuristic.</li>
  * </ul>
  *
- * <p>Volume is conserved everywhere except where lava quenches on water (building land).
- * Vents are springs held at a capped over-pressure — they feed the flow as fast as it can
- * carry lava away but never accumulate into a tower — so long flows happen because the volcano
- * keeps supplying lava, not because a travel budget marched a source past a cliff. The
- * vanilla fluid engine no longer spreads anything (see
- * {@link MoltenBasaltFluid#tick}); it only renders the smooth sloped surfaces described by
- * the cell levels this class writes into the world.
+ * <p>Volume is conserved everywhere except where lava freezes after dwelling in water
+ * (building a solid delta from the seafloor up). Lava enters and sinks through water rather
+ * than skating a floating crust across the surface.
+ * Flank / generic vents are springs held at a capped over-pressure — they feed the flow as
+ * fast as it can carry lava away but never accumulate into a tower. Shield <em>summit</em>
+ * vents instead apply hydrostatic pressure: supply climbs the continuous full column and
+ * tops up the free surface layer-by-layer up to the measured rim, so a crater lake fills from
+ * below and can overtop its crest. The vanilla fluid engine no
+ * longer spreads anything (see {@link MoltenBasaltFluid#tick}); it only renders the smooth
+ * sloped surfaces described by the cell levels this class writes into the world.
  *
  * <p><b>Cooling</b> is owned here too: a BFS from live vents writes {@code ventDist}, and a
  * budgeted heat pass freezes cells at heat 0 into molten cinder / layered basalt. Fed cells
@@ -89,6 +95,12 @@ public final class LavaSimulation {
      */
     private static final int TRAIL = 1;
 
+    /**
+     * Extra heat lost per cool step while a cell is in or touching water — lava can travel a
+     * short distance through water before freezing into solid delta rock.
+     */
+    private static final int WATER_HEAT_LOSS = 12;
+
     /** Max units a cell may shed sideways per step (viscosity); refreshed from config each tick. */
     private int viscosity = 4;
 
@@ -100,6 +112,12 @@ public final class LavaSimulation {
 
     /** Cached from the owning volcano each tick — selects freeze products (cinder vs basalt). */
     private VolcanoType volcanoType = VolcanoType.CINDER_CONE;
+
+    /**
+     * True after the eruption ends: gravity may still drain suspended columns, but lateral
+     * spread is disabled so distal toes cannot churn forever by shedding into empty neighbours.
+     */
+    private boolean coolDown = false;
 
     /** Server-tick accumulator so the field advances once per {@code lavaFlowAdvanceInterval}. */
     private int stepCounter = 0;
@@ -145,8 +163,9 @@ public final class LavaSimulation {
 
     /**
      * Advances the simulation one step. While {@code erupting}, injects from vents and relaxes
-     * the height field; always refreshes feed connectivity on its interval and runs a budgeted
-     * heat/freeze pass so the field cools in place after the eruption ends.
+     * the height field. After the eruption ends, gravity/lateral still run so suspended columns
+     * can land before the heat pass freezes them. Always refreshes feed connectivity on its
+     * interval and runs a budgeted heat/freeze pass.
      */
     public void tick(Level level, VolcanoCoreBlockEntity be, boolean erupting) {
         if (level.isClientSide) {
@@ -187,15 +206,45 @@ public final class LavaSimulation {
         this.spreadBias = this.volcanoType == VolcanoType.SHIELD
                 ? (float) (double) TephraConfig.COMMON.shieldLateralSpread.get()
                 : 0.0f;
+        this.coolDown = !erupting;
 
         if (erupting) {
             int rate = TephraConfig.COMMON.lavaFlowEruptionRate.get();
+            float mult = be.getShieldEffusionMultiplier();
+            rate = Math.max(1, Math.round(rate * mult));
             injectFromVents(level, be, rate, maxCells);
+            relax(level, maxOps, maxCells);
+        } else if (!levels.isEmpty()) {
+            // Cool-down: gravity only (see {@link #relax}) so leftovers settle then freeze.
             relax(level, maxOps, maxCells);
         }
 
         coolPass(level, erupting);
         writeback(level);
+    }
+
+    /**
+     * Registers a world molten block into the simulation if it is not already tracked. Used to
+     * reclaim orphans so cool-down / collapse gating cannot miss visible lava.
+     */
+    public void adoptWorldMolten(Level level, BlockPos pos, int maxCells) {
+        if (!level.isLoaded(pos)) {
+            return;
+        }
+        long key = pos.asLong();
+        if (levels.containsKey(key)) {
+            return;
+        }
+        BlockState s = level.getBlockState(pos);
+        if (!s.is(TephraBlocks.MOLTEN_BASALT_BLOCK.get())) {
+            return;
+        }
+        int amount = FULL;
+        var fluid = s.getFluidState();
+        if (!fluid.isEmpty() && !fluid.isSource()) {
+            amount = Mth.clamp(fluid.getAmount(), 1, FULL);
+        }
+        setLevel(level, key, amount, maxCells);
     }
 
     /**
@@ -214,7 +263,8 @@ public final class LavaSimulation {
     /**
      * Collapses a molten tower above {@code minYExclusive} in column ({@code x},{@code z}): removes
      * those cells from the simulation and clears molten-basalt blocks in the world. Used by the
-     * shield profile so the vent seat cannot climb a rising lava pile.
+     * shield profile to strip mid-air towers above the rim, and by partial caldera collapse to
+     * purge residual sim cells in the summit bowl.
      */
     public void clearColumnAbove(Level level, int x, int minYExclusive, int z) {
         int maxY = Math.min(level.getMaxBuildHeight() - 1, minYExclusive + 64);
@@ -262,14 +312,17 @@ public final class LavaSimulation {
     // --- Injection -----------------------------------------------------------------------
 
     /**
-     * Each live vent is a spring: it is topped up to a full block plus {@code rate} units of
-     * over-pressure whenever the flow has drained it below that, and otherwise left alone. The
-     * cap is the key to a natural-looking vent — the excess drives lava outward, but the vent
-     * can never accumulate faster than the flow carries it away, so it never towers up into a
-     * deep pool or pillar. Output the flow can't take is simply not emitted (the volcano holds
-     * it back), rather than piling at the source.
+     * Feeds live vents. Flank / generic vents are capped springs ({@code FULL + rate}). Shield
+     * summit lakes with a measured rim use {@link #injectSummitLakePressure} so magma from
+     * below raises the free surface layer-by-layer instead of only topping the floor cell.
      */
     private void injectFromVents(Level level, VolcanoCoreBlockEntity be, int rate, int maxCells) {
+        if (be.getVolcanoType() == VolcanoType.SHIELD
+                && be.getShieldEruptionMode() == ShieldEruptionMode.SUMMIT
+                && be.hasSummitRimY()) {
+            injectSummitLakePressure(level, be, rate, maxCells);
+            return;
+        }
         int target = FULL + rate;
         for (BlockPos vent : be.getVentSources()) {
             if (!level.isLoaded(vent)) {
@@ -278,6 +331,53 @@ public final class LavaSimulation {
             long key = vent.asLong();
             if (levels.get(key) < target) {
                 setLevel(level, key, target, maxCells);
+            }
+        }
+    }
+
+    /**
+     * Hydrostatic summit fill: climb the continuous full column above the vent and deposit
+     * over-pressure at the free surface. Climb is <em>not</em> gated on {@link #seekEscape} —
+     * spare floor capacity must not block the lake from stacking toward the rim. Lateral spill
+     * and rim overflow still use seekEscape inside {@code flowStep}. Cap the free surface at
+     * {@code summitRimY + 1} so the lake can overtop without building a mid-air tower.
+     */
+    private void injectSummitLakePressure(Level level, VolcanoCoreBlockEntity be, int rate, int maxCells) {
+        int target = FULL + rate;
+        int maxSurfaceY = be.getSummitRimY() + 1;
+        for (BlockPos vent : be.getVentSources()) {
+            if (!level.isLoaded(vent)) {
+                continue;
+            }
+            int x = vent.getX();
+            int z = vent.getZ();
+            int y = Math.min(vent.getY(), maxSurfaceY);
+            // Walk up through already-full cells to the free surface.
+            while (true) {
+                long key = BlockPos.asLong(x, y, z);
+                int lvl = existingLevel(level, key);
+                if (lvl < FULL) {
+                    // Free surface (or empty vent): spring top-up; lateral flow equalizes the layer.
+                    if (canOccupy(level, key) && !isWater(level, key) && lvl < target) {
+                        setLevel(level, key, target, maxCells);
+                    }
+                    break;
+                }
+                // Full cell: open the next layer whenever space allows — do not wait for confinement.
+                if (y >= maxSurfaceY) {
+                    if (lvl < target) {
+                        setLevel(level, key, target, maxCells);
+                    }
+                    break;
+                }
+                long above = BlockPos.asLong(x, y + 1, z);
+                if (y + 1 > maxSurfaceY || !canOccupy(level, above) || isWater(level, above)) {
+                    if (lvl < target) {
+                        setLevel(level, key, target, maxCells);
+                    }
+                    break;
+                }
+                y++;
             }
         }
     }
@@ -293,10 +393,9 @@ public final class LavaSimulation {
             (a, b) -> Integer.compare(BlockPos.getY(a), BlockPos.getY(b));
 
     /**
-     * One simulation tick: one gravity pass (falls advance a block, so a cliff reads as a
-     * descending stream that stays lit while fed, not a teleport), then one lateral flow pass
-     * (the front creeps ~one block, a river not a streak). Both advance about a block per tick,
-     * so flow speed is roughly {@code 20 / lavaFlowAdvanceInterval} blocks per second.
+     * One simulation tick: one gravity pass, then (while erupting) one lateral flow pass.
+     * During {@link #coolDown}, lateral spill is skipped — distal skins were otherwise shedding
+     * into empty neighbours forever (sim count oscillating, never reaching 0).
      */
     private void relax(Level level, int maxOps, int maxCells) {
         int ops = 0;
@@ -305,6 +404,9 @@ public final class LavaSimulation {
         for (int i = 0; i < fall.size() && ops < maxOps; i++) {
             ops++;
             gravityStep(level, fall.getLong(i), maxCells);
+        }
+        if (coolDown) {
+            return;
         }
         LongArrayList work = new LongArrayList(active);
         work.sort(BY_DESCENDING_Y);
@@ -323,11 +425,9 @@ public final class LavaSimulation {
      * @return true if lava moved (the cell and its neighbours stay active).
      */
     /**
-     * One cell of gravity: moves lava down a single block if it can, quenching on water. Run once
-     * per tick (lowest cells first) so a fall descends a block at a time — a cliff reads as a
-     * descending stream fed from the top rather than teleporting to the bottom. All of the cell's
-     * lava passes straight down: the fall advances exactly one block per tick, the same rate as
-     * the horizontal front, so lava never backs up or pools in mid-air.
+     * One cell of gravity: moves lava down a single block if it can. Water is entered and
+     * displaced (not instantly quenched) so flows sink and build solid deltas from below.
+     * Run once per tick (lowest cells first) so a fall descends a block at a time.
      */
     private boolean gravityStep(Level level, long pos, int maxCells) {
         int amount = levels.get(pos);
@@ -340,9 +440,9 @@ public final class LavaSimulation {
         if (y - 1 < level.getMinBuildHeight() || !canOccupy(level, below)) {
             return false;
         }
-        if (quenchIfWater(level, below)) {
-            setLevel(level, pos, Math.max(0, amount - FULL), maxCells);
-            return true;
+        // Enter water — steam on first contact — then continue as a normal fall into that cell.
+        if (isWater(level, below) && existingLevel(level, below) <= 0) {
+            spawnSteamBurst(level, below);
         }
         int cap = FULL - existingLevel(level, below);
         int d = Math.min(amount, cap);
@@ -393,7 +493,6 @@ public final class LavaSimulation {
         int[] nSurf = new int[4];
         int[] nKey = new int[4];
         long[] nPos = new long[4];
-        boolean[] nWater = new boolean[4];
         int count = 0;
         for (Direction dir : Direction.Plane.HORIZONTAL) {
             int nx = x + dir.getStepX(), nz = z + dir.getStepZ();
@@ -401,13 +500,10 @@ public final class LavaSimulation {
             if (isWall(level, npos)) {
                 continue;
             }
-            if (isWater(level, npos) || touchesWater(level, npos)) {
-                nPos[count] = npos;
-                nSurf[count] = Integer.MIN_VALUE; // water is the lowest possible target
-                nKey[count] = Integer.MIN_VALUE;
-                nWater[count] = true;
-                count++;
-                continue;
+            // Water is passable: probe the true landing so lava sinks through the column instead
+            // of skating a floating crust across the surface.
+            if (isWater(level, npos) && existingLevel(level, npos) <= 0) {
+                spawnSteamBurst(level, npos);
             }
             // The neighbour's true landing surface (probed down) drives the flow decision, so a
             // slope or cliff reads as a real drop. For a genuine drop (≥2 blocks) DEPOSIT at the
@@ -431,7 +527,6 @@ public final class LavaSimulation {
             // real height difference (>=1 level) scales by FULL and always dominates the small
             // jitter, so genuine downhill is never overridden by the tie-break.
             nKey[count] = surf * FULL + dirBias(pos, dir);
-            nWater[count] = false;
             count++;
         }
         // Insertion-sort the (at most four) neighbours by ascending tie-broken key.
@@ -439,31 +534,21 @@ public final class LavaSimulation {
             int kk = nKey[a];
             int sk = nSurf[a];
             long pk = nPos[a];
-            boolean wk = nWater[a];
             int b = a - 1;
             while (b >= 0 && nKey[b] > kk) {
                 nKey[b + 1] = nKey[b];
                 nSurf[b + 1] = nSurf[b];
                 nPos[b + 1] = nPos[b];
-                nWater[b + 1] = nWater[b];
                 b--;
             }
             nKey[b + 1] = kk;
             nSurf[b + 1] = sk;
             nPos[b + 1] = pk;
-            nWater[b + 1] = wk;
         }
         for (int k = 0; k < count && amount > 0; k++) {
             int surface = y * FULL + amount;
             if (nSurf[k] >= surface) {
                 break; // no neighbour is strictly lower — nothing more to shed sideways
-            }
-            if (nWater[k]) {
-                if (quenchIfWater(level, nPos[k])) {
-                    amount = Math.max(0, amount - FULL);
-                    moved = true;
-                }
-                continue;
             }
             int nLvl = existingLevel(level, nPos[k]);
             int capacity = FULL - nLvl;
@@ -630,7 +715,8 @@ public final class LavaSimulation {
         if (amount <= 0) {
             return 0;
         }
-        if (!restsOnSupport(level, pos)) {
+        // Cool-down: allow full drain so gravity can consolidate instead of leaving TRAIL skins.
+        if (coolDown || !restsOnSupport(level, pos)) {
             return amount;
         }
         return Math.max(0, amount - TRAIL);
@@ -733,7 +819,8 @@ public final class LavaSimulation {
      */
     private void setLevel(Level level, long pos, int value, int maxCells) {
         if (value <= 0) {
-            if (levels.containsKey(pos) && restsOnSupport(level, pos)) {
+            // During cool-down do not leave immortal TRAIL skins — remove completely.
+            if (levels.containsKey(pos) && restsOnSupport(level, pos) && !coolDown) {
                 value = TRAIL;
             } else {
                 remove(level, pos);
@@ -844,22 +931,22 @@ public final class LavaSimulation {
     }
 
     /**
-     * Quenches lava at a water-touching cell into permanent basalt, displacing the water — the
-     * chilled-margin rock that real lava forms where it meets water. A full layered-basalt block
-     * (not molten cinder) so it reads as cold, finished stone right away. Returns true if land
-     * was built.
+     * Spawns a short steam burst at a lava–water contact (server → clients). Used when lava
+     * first enters water and when a wet cell freezes into delta rock.
      */
-    private boolean quenchIfWater(Level level, long pos) {
+    private void spawnSteamBurst(Level level, long pos) {
+        if (!(level instanceof ServerLevel server)) {
+            return;
+        }
         BlockPos bp = BlockPos.of(pos);
-        if (!level.isLoaded(bp)) {
-            return false;
-        }
-        if (isWater(level, pos) || touchesWater(level, pos)) {
-            level.setBlockAndUpdate(bp, TephraBlocks.LAYERED_BASALT.get().defaultBlockState()
-                    .setValue(LayeredBasaltBlock.LAYERS, FULL));
-            return true;
-        }
-        return false;
+        double x = bp.getX() + 0.5;
+        double y = bp.getY() + 0.85;
+        double z = bp.getZ() + 0.5;
+        server.sendParticles(TephraParticleTypes.VOLCANO_STEAM.get(),
+                x, y, z, 6, 0.25, 0.15, 0.25, 0.02);
+        server.sendParticles(net.minecraft.core.particles.ParticleTypes.CLOUD,
+                x, y + 0.2, z, 3, 0.2, 0.1, 0.2, 0.01);
+        level.levelEvent(1501, bp, 0); // vanilla lava-extinguish fizz
     }
 
     // --- Feed & cooling ------------------------------------------------------------------
@@ -936,9 +1023,13 @@ public final class LavaSimulation {
         LongArrayList keys = new LongArrayList(levels.keySet());
         LongArrayList toFreeze = new LongArrayList();
         int size = keys.size();
-        int n = Math.min(size, budget);
-        int start = size == 0 ? 0 : Math.floorMod(coolOffset, size);
-        coolOffset = start + n;
+        // Cool-down: touch every remaining cell each step so distal toes cannot hide from the
+        // rotating budget while a few skins slosh forever.
+        int n = erupting ? Math.min(size, budget) : size;
+        int start = size == 0 || !erupting ? 0 : Math.floorMod(coolOffset, size);
+        if (erupting) {
+            coolOffset = start + n;
+        }
         for (int i = 0; i < n; i++) {
             long pos = keys.getLong((start + i) % size);
             int amount = levels.get(pos);
@@ -953,6 +1044,16 @@ public final class LavaSimulation {
             int dist = ventDists.get(pos);
             boolean fed = erupting && dist != UNFED;
 
+            // Cool-down skins / TRAIL puddles: freeze immediately once the eruption is over.
+            if (!erupting && amount <= TRAIL + 1) {
+                if (fallingInto(level, bp)) {
+                    settleFallingCell(level, pos, TephraConfig.COMMON.lavaFlowMaxCells.get(), bp);
+                } else {
+                    toFreeze.add(pos);
+                }
+                continue;
+            }
+
             int openSides = openHorizontalSides(level, pos);
             int loss = baseLoss + edgeLoss * openSides;
             if (amount <= 2) {
@@ -963,11 +1064,18 @@ public final class LavaSimulation {
             } else {
                 loss += distalLoss * 8; // never-connected orphans cool as distal toes
             }
-
-            int heat = heats.get(pos);
-            if (heat <= 0) {
-                heat = heatMax; // legacy / missing entry
+            // Water contact chills quickly, but still allows a short underwater travel before freeze.
+            if (isWater(level, pos) || touchesWater(level, pos)) {
+                loss += WATER_HEAT_LOSS;
             }
+            // After the eruption, drain heat hard — leftover field must empty for caldera collapse.
+            if (!erupting) {
+                loss += Math.max(8, heatMax / 25) + thinLoss * 2;
+            }
+
+            // Missing heat entries get a fresh budget; stored 0 means "ready to freeze" — do not
+            // revive them to heatMax (that created immortal single-block puddles).
+            int heat = heats.containsKey(pos) ? heats.get(pos) : heatMax;
             heat = Math.max(0, heat - loss);
             if (fed) {
                 heat = Math.min(heatMax, heat + refeed);
@@ -975,12 +1083,44 @@ public final class LavaSimulation {
             heats.put(pos, heat);
 
             if (heat <= 0) {
-                toFreeze.add(pos);
+                if (fallingInto(level, bp)) {
+                    if (erupting) {
+                        heats.put(pos, Math.max(1, baseLoss + thinLoss));
+                        active.add(pos);
+                    } else {
+                        settleFallingCell(level, pos, TephraConfig.COMMON.lavaFlowMaxCells.get(), bp);
+                    }
+                } else {
+                    toFreeze.add(pos);
+                }
             }
         }
 
         for (int i = 0; i < toFreeze.size(); i++) {
             freezeCell(level, toFreeze.getLong(i));
+        }
+    }
+
+    /**
+     * Dumps a suspended cool-down cell into its landing column (or freezes it if already supported
+     * after a one-block drop). Prevents immortal mid-air leftovers.
+     */
+    private void settleFallingCell(Level level, long pos, int maxCells, BlockPos bp) {
+        int amount = levels.get(pos);
+        if (amount <= 0) {
+            remove(level, pos);
+            return;
+        }
+        int x = bp.getX(), y = bp.getY(), z = bp.getZ();
+        long land = landingCell(level, x, y, z);
+        if (land == NO_LANDING || land == pos || BlockPos.getY(land) >= y) {
+            forceFreezeCell(level, pos);
+            return;
+        }
+        addLevel(level, land, amount, maxCells);
+        remove(level, pos);
+        if (level.isLoaded(bp) && level.getBlockState(bp).is(TephraBlocks.MOLTEN_BASALT_BLOCK.get())) {
+            level.setBlockAndUpdate(bp, Blocks.AIR.defaultBlockState());
         }
     }
 
@@ -1005,22 +1145,34 @@ public final class LavaSimulation {
         return open;
     }
 
+    private void freezeCell(Level level, long pos) {
+        freezeCell(level, pos, false);
+    }
+
     /**
      * Converts a sim cell into permanent volcanic rock and drops it from the simulation.
-     * Cinder cones: full/falling → molten cinder (ages to solid rock). Shields: full/falling →
-     * vanilla basalt (no cinder). Partial heights always become layered basalt.
+     * Cinder cones: full → molten cinder (ages to solid rock). Shields: full → vanilla basalt.
+     * Partial heights become layered basalt. Mid-air cells are refused unless {@code force}.
      */
-    private void freezeCell(Level level, long pos) {
+    private void freezeCell(Level level, long pos, boolean force) {
         int amount = levels.get(pos);
         if (amount <= 0) {
             remove(level, pos);
             return;
         }
         BlockPos bp = BlockPos.of(pos);
-        boolean falling = level.isLoaded(bp) && fallingInto(level, bp);
+        // Safety: never place floating rock if support vanished between cool and freeze.
+        if (!force && level.isLoaded(bp) && fallingInto(level, bp)) {
+            heats.put(pos, Math.max(1, heats.get(pos)));
+            active.add(pos);
+            return;
+        }
+        int ventDistBeforeFreeze = ventDists.get(pos);
+        boolean wet = isWater(level, pos) || touchesWater(level, pos);
         BlockState result;
-        if (amount >= FULL || falling) {
-            if (volcanoType == VolcanoType.SHIELD) {
+        if (amount >= FULL || wet) {
+            // Underwater / water-margin freeze always yields solid rock (delta fill).
+            if (volcanoType == VolcanoType.SHIELD || wet) {
                 result = Blocks.BASALT.defaultBlockState();
             } else {
                 result = TephraBlocks.MOLTEN_CINDER.get().defaultBlockState()
@@ -1043,7 +1195,71 @@ public final class LavaSimulation {
         if (level.isLoaded(bp)) {
             level.setBlockAndUpdate(bp, result);
             level.levelEvent(1501, bp, 0); // lava-extinguish fizz + smoke
+            if (wet) {
+                spawnSteamBurst(level, pos);
+            }
+            tryPlaceCooledFlowOre(level, bp, ventDistBeforeFreeze);
         }
+    }
+
+    /** Freeze even if the cell still looks unsupported (cool-down settle fallback). */
+    private void forceFreezeCell(Level level, long pos) {
+        freezeCell(level, pos, true);
+    }
+
+    /**
+     * Sparse mineralization beside/under a newly frozen flow cell. Uses a stable coordinate hash
+     * so reloads don't densify ores; chance scales slightly with near-vent distance.
+     */
+    private void tryPlaceCooledFlowOre(Level level, BlockPos frozen, int ventDist) {
+        double chance = TephraConfig.COMMON.cooledFlowOreChance.get();
+        if (chance <= 0.0) {
+            return;
+        }
+        // Prefer near-vent enrichment slightly.
+        if (ventDist >= 0 && ventDist < UNFED) {
+            chance *= 1.0 + Math.max(0, 8 - Math.min(ventDist, 8)) * 0.05;
+        }
+        long seed = level instanceof net.minecraft.server.level.ServerLevel serverLevel ? serverLevel.getSeed() : 0L;
+        long hash = frozen.asLong() * 341873128712L ^ (seed * 132897987541L);
+        hash = hash * 6364136223846793005L + 1442695040888963407L;
+        double roll = ((hash >>> 8) & 0xFFFFFFL) / (double) 0x1000000L;
+        if (roll >= chance) {
+            return;
+        }
+        // Place under the freeze product when host-like, else a horizontal neighbour.
+        BlockPos target = frozen.below();
+        BlockState host = level.getBlockState(target);
+        if (!isCooledFlowOreHost(host)) {
+            Direction dir = Direction.from2DDataValue((int) ((hash >>> 32) & 3L));
+            target = frozen.relative(dir);
+            host = level.getBlockState(target);
+            if (!isCooledFlowOreHost(host)) {
+                return;
+            }
+        }
+        boolean deep = target.getY() < 0;
+        int pick = (int) ((hash >>> 16) & 7L);
+        BlockState ore = pickVanillaOre(deep, pick);
+        level.setBlockAndUpdate(target, ore);
+    }
+
+    private static boolean isCooledFlowOreHost(BlockState state) {
+        return state.is(Blocks.STONE) || state.is(Blocks.DEEPSLATE) || state.is(Blocks.BASALT)
+                || state.is(Blocks.TUFF) || state.is(Blocks.BLACKSTONE) || state.is(Blocks.NETHERRACK);
+    }
+
+    private static BlockState pickVanillaOre(boolean deep, int pick) {
+        return switch (pick) {
+            case 0 -> deep ? Blocks.DEEPSLATE_COAL_ORE.defaultBlockState() : Blocks.COAL_ORE.defaultBlockState();
+            case 1 -> deep ? Blocks.DEEPSLATE_IRON_ORE.defaultBlockState() : Blocks.IRON_ORE.defaultBlockState();
+            case 2 -> deep ? Blocks.DEEPSLATE_COPPER_ORE.defaultBlockState() : Blocks.COPPER_ORE.defaultBlockState();
+            case 3 -> deep ? Blocks.DEEPSLATE_GOLD_ORE.defaultBlockState() : Blocks.GOLD_ORE.defaultBlockState();
+            case 4 -> deep ? Blocks.DEEPSLATE_REDSTONE_ORE.defaultBlockState() : Blocks.REDSTONE_ORE.defaultBlockState();
+            case 5 -> deep ? Blocks.DEEPSLATE_LAPIS_ORE.defaultBlockState() : Blocks.LAPIS_ORE.defaultBlockState();
+            case 6 -> deep ? Blocks.DEEPSLATE_DIAMOND_ORE.defaultBlockState() : Blocks.DIAMOND_ORE.defaultBlockState();
+            default -> deep ? Blocks.DEEPSLATE_EMERALD_ORE.defaultBlockState() : Blocks.EMERALD_ORE.defaultBlockState();
+        };
     }
 
     // --- World writeback (the render "view") ---------------------------------------------

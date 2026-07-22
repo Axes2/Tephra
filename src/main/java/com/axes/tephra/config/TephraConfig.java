@@ -38,6 +38,15 @@ public class TephraConfig {
         public final ModConfigSpec.IntValue offlineLavaLayersPerDay;
         public final ModConfigSpec.IntValue offlineAshLayersPerDay;
 
+        public final ModConfigSpec.BooleanValue shieldWorldgenEnabled;
+        public final ModConfigSpec.IntValue shieldFlatnessMaxDelta;
+        public final ModConfigSpec.IntValue shieldOceanMaxDepth;
+        public final ModConfigSpec.IntValue shieldLandmassCheckRadius;
+        public final ModConfigSpec.DoubleValue shieldMinDryFraction;
+        public final ModConfigSpec.DoubleValue shieldMatureChance;
+        public final ModConfigSpec.DoubleValue oreEnrichmentMultiplier;
+        public final ModConfigSpec.DoubleValue cooledFlowOreChance;
+
         public Common(ModConfigSpec.Builder builder) {
             builder.push("Client");
 
@@ -190,6 +199,42 @@ public class TephraConfig {
             offlineAshLayersPerDay = builder
                     .comment("Abstract ash layers accrued per in-game day of offline ERUPTING (cinder).")
                     .defineInRange("offlineAshLayersPerDay", 320, 0, 16000);
+
+            builder.pop();
+
+            builder.push("ShieldWorldgen");
+
+            shieldWorldgenEnabled = builder
+                    .comment("Master switch for natural shield volcano structure validation. Default: true")
+                    .define("shieldWorldgenEnabled", true);
+
+            shieldFlatnessMaxDelta = builder
+                    .comment("Max WORLD_SURFACE_WG height delta (max-min) across the sample grid before rejecting continental sites. Default: 12")
+                    .defineInRange("shieldFlatnessMaxDelta", 12, 4, 48);
+
+            shieldOceanMaxDepth = builder
+                    .comment("Reject deep-ocean sites where seaLevel - oceanFloor exceeds this (pedestal budget). Default: 80")
+                    .defineInRange("shieldOceanMaxDepth", 80, 20, 120);
+
+            shieldLandmassCheckRadius = builder
+                    .comment("Blocks from center to scan for non-ocean biomes (standalone island check). Default: 640")
+                    .defineInRange("shieldLandmassCheckRadius", 640, 128, 2048);
+
+            shieldMinDryFraction = builder
+                    .comment("Minimum fraction of footprint columns that must be above sea level for ocean shields. Default: 0.30")
+                    .defineInRange("shieldMinDryFraction", 0.30, 0.10, 0.90);
+
+            shieldMatureChance = builder
+                    .comment("Chance a generated shield is mature (else developing). Default: 0.70")
+                    .defineInRange("shieldMatureChance", 0.70, 0.0, 1.0);
+
+            oreEnrichmentMultiplier = builder
+                    .comment("Worldgen ore attempt density relative to baseline inside volcano footprint. Default: 1.5 (+50%)")
+                    .defineInRange("oreEnrichmentMultiplier", 1.5, 1.0, 5.0);
+
+            cooledFlowOreChance = builder
+                    .comment("Chance per frozen lava cell to place a sparse adjacent ore (cooled-flow enrichment). Default: 0.02")
+                    .defineInRange("cooledFlowOreChance", 0.02, 0.0, 0.25);
 
             builder.pop();
         }

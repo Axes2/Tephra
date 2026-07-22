@@ -11,15 +11,13 @@ import java.util.function.Supplier;
 
 public class TephraFeatures {
 
-    // The main Deferred Register for custom Features
     public static final DeferredRegister<Feature<?>> FEATURES =
             DeferredRegister.create(Registries.FEATURE, Tephra.MODID);
 
-    // Registering our new Biome Painter feature
-    public static final Supplier<Feature<NoneFeatureConfiguration>> BIOME_PAINTER =
-            FEATURES.register("biome_painter", () -> new CinderWastesPainterFeature(NoneFeatureConfiguration.CODEC));
+    public static final Supplier<Feature<NoneFeatureConfiguration>> STRIP_VOLCANO_VEGETATION =
+            FEATURES.register("strip_volcano_vegetation",
+                    () -> new StripVolcanoVegetationFeature(NoneFeatureConfiguration.CODEC));
 
-    // Hooking it into the mod event bus
     public static void register(IEventBus eventBus) {
         FEATURES.register(eventBus);
     }

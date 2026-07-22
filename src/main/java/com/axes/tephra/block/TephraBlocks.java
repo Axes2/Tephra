@@ -4,16 +4,16 @@ import com.axes.tephra.Tephra;
 import com.axes.tephra.fluid.MoltenBasaltLiquidBlock;
 import com.axes.tephra.fluid.TephraFluids;
 import net.minecraft.core.registries.Registries;
-import net.minecraft.world.level.block.SoundType;
+import net.minecraft.util.valueproviders.UniformInt;
 import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.level.block.Block;
-import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.DropExperienceBlock;
+import net.minecraft.world.level.block.SoundType;
 import net.minecraft.world.level.block.state.BlockBehaviour;
 import net.minecraft.world.level.material.MapColor;
 import net.minecraft.world.level.material.PushReaction;
 import net.neoforged.bus.api.IEventBus;
-import net.neoforged.neoforge.registries.DeferredBlock;
 import net.neoforged.neoforge.registries.DeferredHolder;
 import net.neoforged.neoforge.registries.DeferredRegister;
 
@@ -74,6 +74,33 @@ public class TephraBlocks {
             () -> new LayeredBasaltBlock(BlockBehaviour.Properties.ofFullCopy(net.minecraft.world.level.block.Blocks.BASALT)
                     .noOcclusion() // Add this so the layers don't cull blocks underneath them
             ));
+
+    public static final DeferredHolder<Block, Block> SULFUR_ORE = registerBlock("sulfur_ore",
+            () -> new DropExperienceBlock(UniformInt.of(0, 2), BlockBehaviour.Properties.of()
+                    .mapColor(MapColor.STONE)
+                    .requiresCorrectToolForDrops()
+                    .strength(3.0F, 3.0F)
+            ));
+
+    public static final DeferredHolder<Block, Block> DEEPSLATE_SULFUR_ORE = registerBlock("deepslate_sulfur_ore",
+            () -> new DropExperienceBlock(UniformInt.of(0, 2), BlockBehaviour.Properties.of()
+                    .mapColor(MapColor.DEEPSLATE)
+                    .requiresCorrectToolForDrops()
+                    .strength(4.5F, 3.0F)
+                    .sound(SoundType.DEEPSLATE)
+            ));
+
+    public static final DeferredHolder<Block, Block> SULFUR_CRUST = registerBlock("sulfur_crust",
+            () -> new SulfurCrustBlock(BlockBehaviour.Properties.of()
+                    .mapColor(MapColor.COLOR_YELLOW)
+                    .strength(0.1F)
+                    .sound(SoundType.SAND)
+                    .noOcclusion()
+            ));
+
+    /** Sulfur dust item used in gunpowder crafting. */
+    public static final DeferredHolder<Item, Item> SULFUR = ITEMS.register("sulfur",
+            () -> new Item(new Item.Properties()));
 
     private static <T extends Block> DeferredHolder<Block, T> registerBlock(String name, Supplier<T> block) {
         DeferredHolder<Block, T> toReturn = BLOCKS.register(name, block);

@@ -1,7 +1,7 @@
 package com.axes.tephra.worldgen.structure;
 
 import com.axes.tephra.Tephra;
-import com.axes.tephra.worldgen.TephraBiomes;
+import com.axes.tephra.worldgen.TephraBiomeTags;
 import net.minecraft.core.HolderGetter;
 import net.minecraft.core.HolderSet;
 import net.minecraft.core.registries.Registries;
@@ -17,21 +17,26 @@ import java.util.Map;
 
 public class TephraConfiguredStructures {
 
-    public static final ResourceKey<Structure> CINDER_CONE = ResourceKey.create(Registries.STRUCTURE, ResourceLocation.fromNamespaceAndPath(Tephra.MODID, "cinder_cone"));
+    /** Kept as reference; not registered into a structure set. */
+    public static final ResourceKey<Structure> CINDER_CONE = ResourceKey.create(
+            Registries.STRUCTURE, ResourceLocation.fromNamespaceAndPath(Tephra.MODID, "cinder_cone"));
+
+    public static final ResourceKey<Structure> SHIELD_VOLCANO = ResourceKey.create(
+            Registries.STRUCTURE, ResourceLocation.fromNamespaceAndPath(Tephra.MODID, "shield_volcano"));
 
     public static void bootstrap(BootstrapContext<Structure> context) {
         HolderGetter<Biome> biomeLookup = context.lookup(Registries.BIOME);
+        HolderSet<Biome> shieldBiomes = biomeLookup.getOrThrow(TephraBiomeTags.HAS_SHIELD_VOLCANO);
 
-        // Tell the structure to spawn exclusively in our custom biome
-        var cinderWastes = biomeLookup.getOrThrow(TephraBiomes.CINDER_WASTES);
-
-        Structure.StructureSettings settings = new Structure.StructureSettings(
-                HolderSet.direct(cinderWastes),
+        Structure.StructureSettings shieldSettings = new Structure.StructureSettings(
+                shieldBiomes,
                 Map.of(),
                 GenerationStep.Decoration.SURFACE_STRUCTURES,
-                TerrainAdjustment.NONE // We are handling our own terrain carving
+                TerrainAdjustment.NONE
         );
+        context.register(SHIELD_VOLCANO, new ShieldVolcanoStructure(shieldSettings));
 
-        context.register(CINDER_CONE, new CinderConeStructure(settings));
+        // Cinder cone kept for reference only — host tag empty via unused key registration
+        // is intentionally omitted from structure sets (see TephraStructureSets).
     }
 }

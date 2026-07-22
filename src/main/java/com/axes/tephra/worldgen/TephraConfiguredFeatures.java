@@ -10,15 +10,12 @@ import net.minecraft.world.level.levelgen.feature.configurations.FeatureConfigur
 
 public class TephraConfiguredFeatures {
 
-    // Register the key for our painter
-    public static final ResourceKey<ConfiguredFeature<?, ?>> BIOME_PAINTER_KEY = registerKey("biome_painter");
+    public static final ResourceKey<ConfiguredFeature<?, ?>> STRIP_VOLCANO_VEGETATION =
+            ResourceKey.create(Registries.CONFIGURED_FEATURE,
+                    ResourceLocation.fromNamespaceAndPath(Tephra.MODID, "strip_volcano_vegetation"));
 
     public static void bootstrap(BootstrapContext<ConfiguredFeature<?, ?>> context) {
-        // Bind the feature we made to the key
-        context.register(BIOME_PAINTER_KEY, new ConfiguredFeature<>(TephraFeatures.BIOME_PAINTER.get(), FeatureConfiguration.NONE));
-    }
-
-    public static ResourceKey<ConfiguredFeature<?, ?>> registerKey(String name) {
-        return ResourceKey.create(Registries.CONFIGURED_FEATURE, ResourceLocation.fromNamespaceAndPath(Tephra.MODID, name));
+        context.register(STRIP_VOLCANO_VEGETATION,
+                new ConfiguredFeature<>(TephraFeatures.STRIP_VOLCANO_VEGETATION.get(), FeatureConfiguration.NONE));
     }
 }

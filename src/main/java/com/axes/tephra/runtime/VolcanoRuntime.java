@@ -55,6 +55,10 @@ public final class VolcanoRuntime {
         record.setType(core.getVolcanoType());
         record.setPhaseTicks(core.getPhaseTicks());
         record.setCraterBaseRadius(core.getCraterBaseRadius());
+        record.setCalderaDepth(core.getCalderaDepth());
+        record.setLastCollapseRimY(core.getLastCollapseRimY());
+        // OR so an offline-set pending flag is not wiped by a freshly loaded core default.
+        record.setPendingCalderaCollapse(core.isPendingCalderaCollapse() || record.isPendingCalderaCollapse());
         record.setPlumeHeight(core.getPlumeHeight());
         record.setInfluenceRadius(core.getActiveProfile().getInfluenceRadius(core));
         if (core.getBlockState().hasProperty(com.axes.tephra.block.VolcanoCoreBlock.PHASE)) {
@@ -68,6 +72,9 @@ public final class VolcanoRuntime {
         }
         core.setPhaseTicks(record.getPhaseTicks());
         core.setCraterBaseRadius(record.getCraterBaseRadius());
+        core.setCalderaDepth(record.getCalderaDepth());
+        core.setLastCollapseRimY(record.getLastCollapseRimY());
+        core.setPendingCalderaCollapse(record.isPendingCalderaCollapse());
         core.setPlumeHeight(record.getPlumeHeight());
         core.setActivityLevel(record.getActivityLevel());
         core.setPersonalitySeed(record.getPersonalitySeed());

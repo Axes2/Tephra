@@ -30,6 +30,9 @@ public class TephraParticleTypes {
     public static final DeferredHolder<ParticleType<?>, SimpleParticleType> LAVA_SPARK =
             PARTICLE_TYPES.register("lava_spark", () -> new SimpleParticleType(true));
 
+    public static final DeferredHolder<ParticleType<?>, SimpleParticleType> FOUNTAIN_SMOKE =
+            PARTICLE_TYPES.register("fountain_smoke", () -> new SimpleParticleType(true));
+
     public static void register(IEventBus eventBus) {
         PARTICLE_TYPES.register(eventBus);
     }

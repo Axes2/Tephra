@@ -26,19 +26,69 @@ import java.util.Set;
 
 public class VolcanoCoreBlockEntity extends BlockEntity {
 
+    /** Duration of a timed partial caldera collapse (~60 seconds). */
+    public static final int CALDERA_COLLAPSE_DURATION = 1200;
+
     private int phaseTicks = 0;
     private int targetDormantTicks = 1200;
     private int clientShakeTimer = 0;
     private int plumeHeight = 0;
     private float craterBaseRadius = 12.0f;
+    /** Target caldera bowl depth (blocks below rim). Shield worldgen seeds 2–4. */
+    private int calderaDepth = 3;
+    /**
+     * Rim Y after the last partial caldera collapse. {@link Integer#MIN_VALUE} means unset
+     * (first collapse uses measured rim with no growth cap).
+     */
+    private int lastCollapseRimY = Integer.MIN_VALUE;
+    /** Offline/unload: reshape caldera on next loaded dormant tick. */
+    private boolean pendingCalderaCollapse = false;
+    /** True while a timed inside-out caldera collapse is carving. */
+    private boolean calderaCollapseActive = false;
+    /** Ticks elapsed in the current timed collapse (0..{@link #CALDERA_COLLAPSE_DURATION}). */
+    private int calderaCollapseTicks = 0;
+    /** Locked rim / floor targets for the active collapse. */
+    private int collapseEffectiveRimY = 0;
+    private int collapseTargetFloorY = 0;
+    /**
+     * Measured summit rim crest Y while a shield summit lake is active.
+     * {@link Integer#MIN_VALUE} when unset (flank eruptions / non-shield). Used by the lava
+     * sim for hydrostatic lake fill and by the shield profile for anti-tower clears.
+     */
+    private int summitRimY = Integer.MIN_VALUE;
     private long lastRecordedGameTime = 0L;
-    private float eruptionIntensity = 1.0f;
+    private float eruptionIntensity = 5.5f;
     private long personalitySeed = 0L;
     private float activityLevel = 1.0f;
     /** Abstract lava units from offline sim; injected into LavaSimulation while erupting. */
     private int pendingEffusiveLayers = 0;
     /** Ash budget from offline; painted on a normal tick (never in onLoad). */
     private int pendingAshLayers = 0;
+    /** When &gt; 0, overrides profile influence (set by worldgen footprint). */
+    private float influenceRadiusOverride = -1.0f;
+
+    /** Summit pond vs rift-flank eruption for the current shield erupting cycle. */
+    private ShieldEruptionMode shieldEruptionMode = ShieldEruptionMode.SUMMIT;
+    /** Preferred rift azimuth in radians; reused across eruptions when {@link #hasRiftMemory}. */
+    private float riftYaw = 0.0f;
+    private boolean hasRiftMemory = false;
+    /** Blocks carved so far along the opening flank fissure. */
+    private int flankCrackProgress = 0;
+    private int flankCrackLength = 0;
+    private long flankCrackHeadPacked = Long.MIN_VALUE;
+    private boolean flankCrackComplete = true;
+    /** How many fissure vents were opened at the start of a flank eruption. */
+    private int initialFlankVentCount = 0;
+    /** Target surviving vents after consolidation (1–2). */
+    private int flankPersistTarget = 2;
+    /** Crack fully carved; lava vents still being placed along the plan. */
+    private boolean flankCarveDone = false;
+    /** Planned flank vent positions (packed), filled during carve, opened during fill. */
+    private long[] flankVentPlan = new long[0];
+    /** Next index in {@link #flankVentPlan} to open during the fill stage. */
+    private int flankVentFillIndex = 0;
+    /** Ticks spent in the current flank crack/fill prelude (pacing). */
+    private int flankPreludeTicks = 0;
 
     // Every molten basalt source block this volcano has opened (vent pond, flank breakouts).
     // Persisted so an eruption interrupted by a save/reload can still be quenched.
@@ -89,9 +139,269 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
     public void setPlumeHeight(int height) { this.plumeHeight = height; }
     public float getCraterBaseRadius() { return this.craterBaseRadius; }
     public void setCraterBaseRadius(float radius) { this.craterBaseRadius = radius; }
+
+    public int getCalderaDepth() { return this.calderaDepth; }
+    public void setCalderaDepth(int calderaDepth) {
+        this.calderaDepth = Math.max(2, Math.min(4, calderaDepth));
+        setChanged();
+    }
+
+    public int getLastCollapseRimY() { return this.lastCollapseRimY; }
+    public void setLastCollapseRimY(int lastCollapseRimY) {
+        this.lastCollapseRimY = lastCollapseRimY;
+        setChanged();
+    }
+
+    public boolean isPendingCalderaCollapse() { return this.pendingCalderaCollapse; }
+    public void setPendingCalderaCollapse(boolean pendingCalderaCollapse) {
+        this.pendingCalderaCollapse = pendingCalderaCollapse;
+        setChanged();
+    }
+
+    public boolean isCalderaCollapseActive() { return this.calderaCollapseActive; }
+    public void setCalderaCollapseActive(boolean calderaCollapseActive) {
+        this.calderaCollapseActive = calderaCollapseActive;
+        setChanged();
+    }
+
+    public int getCalderaCollapseTicks() { return this.calderaCollapseTicks; }
+    public void setCalderaCollapseTicks(int calderaCollapseTicks) {
+        this.calderaCollapseTicks = Math.max(0, calderaCollapseTicks);
+        setChanged();
+    }
+
+    public void incrementCalderaCollapseTicks() {
+        this.calderaCollapseTicks++;
+        setChanged();
+    }
+
+    public int getCollapseEffectiveRimY() { return this.collapseEffectiveRimY; }
+    public void setCollapseEffectiveRimY(int collapseEffectiveRimY) {
+        this.collapseEffectiveRimY = collapseEffectiveRimY;
+        setChanged();
+    }
+
+    public int getSummitRimY() { return this.summitRimY; }
+    public void setSummitRimY(int summitRimY) {
+        this.summitRimY = summitRimY;
+        setChanged();
+    }
+
+    public boolean hasSummitRimY() {
+        return this.summitRimY != Integer.MIN_VALUE;
+    }
+
+    public int getCollapseTargetFloorY() { return this.collapseTargetFloorY; }
+    public void setCollapseTargetFloorY(int collapseTargetFloorY) {
+        this.collapseTargetFloorY = collapseTargetFloorY;
+        setChanged();
+    }
     public void setClientShakeTimer(int ticks) { this.clientShakeTimer = ticks; }
     public float getEruptionIntensity() { return this.eruptionIntensity; }
-    public void setEruptionIntensity(float intensity) { this.eruptionIntensity = intensity; }
+    public void setEruptionIntensity(float intensity) {
+        this.eruptionIntensity = Math.max(1.0f, Math.min(10.0f, intensity));
+        setChanged();
+    }
+
+    public ShieldEruptionMode getShieldEruptionMode() {
+        return shieldEruptionMode;
+    }
+
+    public void setShieldEruptionMode(ShieldEruptionMode shieldEruptionMode) {
+        this.shieldEruptionMode = shieldEruptionMode == null ? ShieldEruptionMode.SUMMIT : shieldEruptionMode;
+        setChanged();
+    }
+
+    public float getRiftYaw() {
+        return riftYaw;
+    }
+
+    public void setRiftYaw(float riftYaw) {
+        this.riftYaw = riftYaw;
+        setChanged();
+    }
+
+    public boolean hasRiftMemory() {
+        return hasRiftMemory;
+    }
+
+    public void setHasRiftMemory(boolean hasRiftMemory) {
+        this.hasRiftMemory = hasRiftMemory;
+        setChanged();
+    }
+
+    public int getFlankCrackProgress() {
+        return flankCrackProgress;
+    }
+
+    public void setFlankCrackProgress(int flankCrackProgress) {
+        this.flankCrackProgress = Math.max(0, flankCrackProgress);
+        setChanged();
+    }
+
+    public int getFlankCrackLength() {
+        return flankCrackLength;
+    }
+
+    public void setFlankCrackLength(int flankCrackLength) {
+        this.flankCrackLength = Math.max(0, flankCrackLength);
+        setChanged();
+    }
+
+    public boolean hasFlankCrackHead() {
+        return flankCrackHeadPacked != Long.MIN_VALUE;
+    }
+
+    public BlockPos getFlankCrackHead() {
+        return hasFlankCrackHead() ? BlockPos.of(flankCrackHeadPacked) : null;
+    }
+
+    public void setFlankCrackHead(BlockPos head) {
+        this.flankCrackHeadPacked = head == null ? Long.MIN_VALUE : head.asLong();
+        setChanged();
+    }
+
+    public boolean isFlankCrackComplete() {
+        return flankCrackComplete;
+    }
+
+    public void setFlankCrackComplete(boolean flankCrackComplete) {
+        this.flankCrackComplete = flankCrackComplete;
+        setChanged();
+    }
+
+    public int getInitialFlankVentCount() {
+        return initialFlankVentCount;
+    }
+
+    public void setInitialFlankVentCount(int initialFlankVentCount) {
+        this.initialFlankVentCount = Math.max(0, initialFlankVentCount);
+        setChanged();
+    }
+
+    public int getFlankPersistTarget() {
+        return flankPersistTarget;
+    }
+
+    public void setFlankPersistTarget(int flankPersistTarget) {
+        this.flankPersistTarget = Math.max(1, Math.min(2, flankPersistTarget));
+        setChanged();
+    }
+
+    public boolean isFlankCarveDone() {
+        return flankCarveDone;
+    }
+
+    public void setFlankCarveDone(boolean flankCarveDone) {
+        this.flankCarveDone = flankCarveDone;
+        setChanged();
+    }
+
+    public long[] getFlankVentPlan() {
+        return flankVentPlan;
+    }
+
+    public void setFlankVentPlan(long[] flankVentPlan) {
+        this.flankVentPlan = flankVentPlan == null ? new long[0] : flankVentPlan;
+        setChanged();
+    }
+
+    public void addFlankVentPlan(BlockPos pos) {
+        long packed = pos.asLong();
+        for (long existing : this.flankVentPlan) {
+            if (existing == packed) {
+                return;
+            }
+        }
+        long[] next = new long[this.flankVentPlan.length + 1];
+        System.arraycopy(this.flankVentPlan, 0, next, 0, this.flankVentPlan.length);
+        next[this.flankVentPlan.length] = packed;
+        this.flankVentPlan = next;
+        setChanged();
+    }
+
+    public void clearFlankVentPlan() {
+        this.flankVentPlan = new long[0];
+        this.flankVentFillIndex = 0;
+        setChanged();
+    }
+
+    public int getFlankVentFillIndex() {
+        return flankVentFillIndex;
+    }
+
+    public void setFlankVentFillIndex(int flankVentFillIndex) {
+        this.flankVentFillIndex = Math.max(0, flankVentFillIndex);
+        setChanged();
+    }
+
+    public int getFlankPreludeTicks() {
+        return flankPreludeTicks;
+    }
+
+    public void setFlankPreludeTicks(int flankPreludeTicks) {
+        this.flankPreludeTicks = Math.max(0, flankPreludeTicks);
+        setChanged();
+    }
+
+    public void incrementFlankPreludeTicks() {
+        this.flankPreludeTicks++;
+        setChanged();
+    }
+
+    /**
+     * True while a shield flank fissure is still opening/filling — eruption clock and full
+     * fountain intensity wait until this returns false.
+     */
+    public boolean isShieldFlankPrelude() {
+        return this.volcanoType == VolcanoType.SHIELD
+                && this.shieldEruptionMode == ShieldEruptionMode.FLANK
+                && !this.flankCrackComplete;
+    }
+
+    /**
+     * Shield lava injection scale: intensity relative to the ~5.5 baseline, times an early-peak
+     * time curve (high for the first ~10% of the eruption, then settling toward a steady rate).
+     * Non-shield volcanoes always return {@code 1}. Flank prelude injects nothing until vents open,
+     * then a low trickle while filling.
+     */
+    public float getShieldEffusionMultiplier() {
+        if (this.volcanoType != VolcanoType.SHIELD) {
+            return 1.0f;
+        }
+        if (isShieldFlankPrelude()) {
+            if (!this.flankCarveDone || this.ventSources.isEmpty()) {
+                return 0.0f;
+            }
+            return 0.35f * (this.eruptionIntensity / 5.5f);
+        }
+        float intensityScale = this.eruptionIntensity / 5.5f;
+        int duration = Math.max(1, TephraConfig.COMMON.shieldEruptionDuration.get());
+        float progress = Math.min(1.0f, this.phaseTicks / (float) duration);
+        float timeCurve;
+        if (progress < 0.10f) {
+            timeCurve = 2.0f;
+        } else if (progress < 0.25f) {
+            float t = (progress - 0.10f) / 0.15f;
+            timeCurve = 2.0f + (0.85f - 2.0f) * t;
+        } else {
+            timeCurve = 0.85f;
+        }
+        return Math.max(0.25f, intensityScale * timeCurve);
+    }
+
+    /** Intensity mapped for sound volume so 5.5 ≈ the old 1.0 multiplier. */
+    public float getEruptionSoundScale() {
+        return Math.max(0.35f, Math.min(2.2f, this.eruptionIntensity / 5.5f));
+    }
+
+    public void syncToClient() {
+        if (this.level != null && !this.level.isClientSide) {
+            BlockState state = getBlockState();
+            this.level.sendBlockUpdated(this.worldPosition, state, state, 3);
+        }
+    }
+
     public long getPersonalitySeed() { return this.personalitySeed; }
     public void setPersonalitySeed(long personalitySeed) {
         this.personalitySeed = personalitySeed;
@@ -112,6 +422,15 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
     }
     public void addPendingAshLayers(int delta) {
         this.pendingAshLayers = Math.max(0, this.pendingAshLayers + delta);
+    }
+
+    public float getInfluenceRadiusOverride() {
+        return this.influenceRadiusOverride;
+    }
+
+    public void setInfluenceRadiusOverride(float influenceRadiusOverride) {
+        this.influenceRadiusOverride = influenceRadiusOverride;
+        setChanged();
     }
 
     public void trackVentSource(BlockPos pos) {
@@ -174,6 +493,11 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
                 level.setBlockAndUpdate(ventPos, plug);
             }
             iterator.remove();
+            setChanged();
+        }
+        // Summit hydrostatic inject keys off this; clear when no vents remain.
+        if (this.ventSources.isEmpty()) {
+            this.summitRimY = Integer.MIN_VALUE;
             setChanged();
         }
     }
@@ -279,7 +603,11 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
         }
 
         // --- SERVER SIDE ---
-        blockEntity.phaseTicks++;
+        // Flank crack/fill prelude runs before the eruption clock so the first 10% peak
+        // starts when fountains actually begin.
+        if (!blockEntity.isShieldFlankPrelude()) {
+            blockEntity.phaseTicks++;
+        }
         blockEntity.lastRecordedGameTime = level.getGameTime();
 
         // Delegate profile actions (Deposition & Audio Loops)
@@ -302,7 +630,7 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
             com.axes.tephra.fluid.LavaFlowEngine.tick(level, pos, blockEntity, true);
             spendPendingEffusiveIntoSim(level, blockEntity);
         } else if (blockEntity.lavaSim != null && !blockEntity.lavaSim.isEmpty()) {
-            // Post-eruption die-down: no inject/relax, only feed+heat+freeze until empty.
+            // Post-eruption die-down: gravity + heat/freeze until empty (no injection).
             com.axes.tephra.fluid.LavaFlowEngine.tick(level, pos, blockEntity, false);
             blockEntity.setChanged();
         }
@@ -403,6 +731,13 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
                 int recoveryDuration = blockEntity.activeProfile.getPhaseDurationTicks(VolcanoPhase.RECOVERY, level.random, 1200);
                 if (blockEntity.phaseTicks >= recoveryDuration) {
                     blockEntity.setPhase(level, pos, state, VolcanoPhase.DORMANT);
+                    if (blockEntity.volcanoType == VolcanoType.SHIELD
+                            && blockEntity.activeProfile instanceof com.axes.tephra.block.profile.ShieldVolcanoProfile shield) {
+                        // Always arm pending first: begin only succeeds once summit lava has cooled
+                        // (and chunks are loaded). Dormant ticks retry via pendingCalderaCollapse.
+                        blockEntity.setPendingCalderaCollapse(true);
+                        shield.beginCalderaCollapse(level, pos, blockEntity);
+                    }
                     if (level instanceof ServerLevel serverLevel) {
                         blockEntity.targetDormantTicks = VolcanoRuntime.scaledMajorIntervalTicks(
                                 VolcanoRuntime.find(serverLevel, pos).orElseGet(() -> {
@@ -442,6 +777,15 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
     }
 
     public void setPhase(Level level, BlockPos pos, BlockState state, VolcanoPhase phase) {
+        setPhase(level, pos, state, phase, null, null);
+    }
+
+    /**
+     * @param modeOverride      optional forced summit/flank for shield testing; {@code null} = roll
+     * @param intensityOverride optional forced intensity 1–10; {@code null} = roll
+     */
+    public void setPhase(Level level, BlockPos pos, BlockState state, VolcanoPhase phase,
+                         ShieldEruptionMode modeOverride, Float intensityOverride) {
         VolcanoPhase oldPhase = state.getValue(VolcanoCoreBlock.PHASE);
 
         level.setBlock(pos, state.setValue(VolcanoCoreBlock.PHASE, phase), 3);
@@ -456,18 +800,29 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
             });
         }
 
-        if (oldPhase == VolcanoPhase.ERUPTING && !level.isClientSide) {
-            ClientboundStopSoundPacket stopPacket = new ClientboundStopSoundPacket(
-                    com.axes.tephra.sound.TephraSounds.VOLCANO_ERUPT.getId(),
-                    SoundSource.BLOCKS
-            );
+        if (!level.isClientSide) {
+            if (oldPhase == VolcanoPhase.ERUPTING && phase != VolcanoPhase.ERUPTING) {
+                if (this.volcanoType == VolcanoType.SHIELD
+                        && this.shieldEruptionMode == ShieldEruptionMode.FLANK) {
+                    this.hasRiftMemory = true;
+                }
+                ClientboundStopSoundPacket stopPacket = new ClientboundStopSoundPacket(
+                        com.axes.tephra.sound.TephraSounds.VOLCANO_ERUPT.getId(),
+                        SoundSource.BLOCKS
+                );
 
-            for (Player player : level.players()) {
-                if (player instanceof ServerPlayer serverPlayer) {
-                    if (serverPlayer.blockPosition().closerThan(pos, 350)) {
-                        serverPlayer.connection.send(stopPacket);
+                for (Player player : level.players()) {
+                    if (player instanceof ServerPlayer serverPlayer) {
+                        if (serverPlayer.blockPosition().closerThan(pos, 350)) {
+                            serverPlayer.connection.send(stopPacket);
+                        }
                     }
                 }
+            }
+
+            if (phase == VolcanoPhase.ERUPTING && this.volcanoType == VolcanoType.SHIELD
+                    && this.activeProfile instanceof com.axes.tephra.block.profile.ShieldVolcanoProfile shield) {
+                shield.beginEruption(level, pos, this, modeOverride, intensityOverride);
             }
         }
     }
@@ -493,6 +848,14 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
         tag.putInt("TargetDormantTicks", this.targetDormantTicks);
         tag.putInt("PlumeHeight", this.plumeHeight);
         tag.putFloat("CraterBaseRadius", this.craterBaseRadius); // Save size
+        tag.putInt("CalderaDepth", this.calderaDepth);
+        tag.putInt("LastCollapseRimY", this.lastCollapseRimY);
+        tag.putBoolean("PendingCalderaCollapse", this.pendingCalderaCollapse);
+        tag.putBoolean("CalderaCollapseActive", this.calderaCollapseActive);
+        tag.putInt("CalderaCollapseTicks", this.calderaCollapseTicks);
+        tag.putInt("CollapseEffectiveRimY", this.collapseEffectiveRimY);
+        tag.putInt("CollapseTargetFloorY", this.collapseTargetFloorY);
+        tag.putInt("SummitRimY", this.summitRimY);
         tag.putString("VolcanoType", this.volcanoType.getSerializedName());
         tag.putLong("LastRecordedGameTime", level != null ? level.getGameTime() : this.lastRecordedGameTime);
         tag.putLongArray("VentSources", this.ventSources.stream().mapToLong(BlockPos::asLong).toArray());
@@ -505,6 +868,20 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
         tag.putInt("PendingEffusiveLayers", this.pendingEffusiveLayers);
         tag.putInt("PendingAshLayers", this.pendingAshLayers);
         tag.putFloat("EruptionIntensity", this.eruptionIntensity);
+        tag.putFloat("InfluenceRadiusOverride", this.influenceRadiusOverride);
+        tag.putString("ShieldEruptionMode", this.shieldEruptionMode.getSerializedName());
+        tag.putFloat("RiftYaw", this.riftYaw);
+        tag.putBoolean("HasRiftMemory", this.hasRiftMemory);
+        tag.putInt("FlankCrackProgress", this.flankCrackProgress);
+        tag.putInt("FlankCrackLength", this.flankCrackLength);
+        tag.putLong("FlankCrackHead", this.flankCrackHeadPacked);
+        tag.putBoolean("FlankCrackComplete", this.flankCrackComplete);
+        tag.putInt("InitialFlankVentCount", this.initialFlankVentCount);
+        tag.putInt("FlankPersistTarget", this.flankPersistTarget);
+        tag.putBoolean("FlankCarveDone", this.flankCarveDone);
+        tag.putLongArray("FlankVentPlan", this.flankVentPlan);
+        tag.putInt("FlankVentFillIndex", this.flankVentFillIndex);
+        tag.putInt("FlankPreludeTicks", this.flankPreludeTicks);
     }
 
     @Override
@@ -518,6 +895,26 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
             this.craterBaseRadius = tag.getFloat("CraterBaseRadius"); // Load size
         } else {
             this.craterBaseRadius = 12.0f; // Default fallback safety
+        }
+        if (tag.contains("CalderaDepth")) {
+            this.calderaDepth = Math.max(2, Math.min(4, tag.getInt("CalderaDepth")));
+        }
+        if (tag.contains("LastCollapseRimY")) {
+            this.lastCollapseRimY = tag.getInt("LastCollapseRimY");
+        }
+        this.pendingCalderaCollapse = tag.getBoolean("PendingCalderaCollapse");
+        this.calderaCollapseActive = tag.getBoolean("CalderaCollapseActive");
+        this.calderaCollapseTicks = tag.getInt("CalderaCollapseTicks");
+        if (tag.contains("CollapseEffectiveRimY")) {
+            this.collapseEffectiveRimY = tag.getInt("CollapseEffectiveRimY");
+        }
+        if (tag.contains("CollapseTargetFloorY")) {
+            this.collapseTargetFloorY = tag.getInt("CollapseTargetFloorY");
+        }
+        if (tag.contains("SummitRimY")) {
+            this.summitRimY = tag.getInt("SummitRimY");
+        } else {
+            this.summitRimY = Integer.MIN_VALUE;
         }
         this.ventSources.clear();
         for (long packedPos : tag.getLongArray("VentSources")) {
@@ -555,5 +952,30 @@ public class VolcanoCoreBlockEntity extends BlockEntity {
         if (tag.contains("EruptionIntensity")) {
             this.eruptionIntensity = tag.getFloat("EruptionIntensity");
         }
+        if (tag.contains("InfluenceRadiusOverride")) {
+            this.influenceRadiusOverride = tag.getFloat("InfluenceRadiusOverride");
+        }
+        if (tag.contains("ShieldEruptionMode")) {
+            ShieldEruptionMode mode = ShieldEruptionMode.byName(tag.getString("ShieldEruptionMode"));
+            this.shieldEruptionMode = mode != null ? mode : ShieldEruptionMode.SUMMIT;
+        }
+        if (tag.contains("RiftYaw")) {
+            this.riftYaw = tag.getFloat("RiftYaw");
+        }
+        this.hasRiftMemory = tag.getBoolean("HasRiftMemory");
+        this.flankCrackProgress = tag.getInt("FlankCrackProgress");
+        this.flankCrackLength = tag.getInt("FlankCrackLength");
+        if (tag.contains("FlankCrackHead")) {
+            this.flankCrackHeadPacked = tag.getLong("FlankCrackHead");
+        }
+        this.flankCrackComplete = !tag.contains("FlankCrackComplete") || tag.getBoolean("FlankCrackComplete");
+        this.initialFlankVentCount = tag.getInt("InitialFlankVentCount");
+        if (tag.contains("FlankPersistTarget")) {
+            this.flankPersistTarget = Math.max(1, Math.min(2, tag.getInt("FlankPersistTarget")));
+        }
+        this.flankCarveDone = tag.getBoolean("FlankCarveDone");
+        this.flankVentPlan = tag.contains("FlankVentPlan") ? tag.getLongArray("FlankVentPlan") : new long[0];
+        this.flankVentFillIndex = tag.getInt("FlankVentFillIndex");
+        this.flankPreludeTicks = tag.getInt("FlankPreludeTicks");
     }
 }

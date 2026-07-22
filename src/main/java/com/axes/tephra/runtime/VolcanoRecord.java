@@ -23,6 +23,9 @@ public final class VolcanoRecord {
     private float activityLevel;
     private float influenceRadius;
     private float craterBaseRadius;
+    private int calderaDepth = 3;
+    private int lastCollapseRimY = Integer.MIN_VALUE;
+    private boolean pendingCalderaCollapse;
     private int plumeHeight;
     private long lastSimGameTime;
     /** Abstract lava volume accrued while unloaded; spent as packets when loaded. */
@@ -114,6 +117,30 @@ public final class VolcanoRecord {
         this.craterBaseRadius = craterBaseRadius;
     }
 
+    public int getCalderaDepth() {
+        return calderaDepth;
+    }
+
+    public void setCalderaDepth(int calderaDepth) {
+        this.calderaDepth = Math.max(2, Math.min(4, calderaDepth));
+    }
+
+    public int getLastCollapseRimY() {
+        return lastCollapseRimY;
+    }
+
+    public void setLastCollapseRimY(int lastCollapseRimY) {
+        this.lastCollapseRimY = lastCollapseRimY;
+    }
+
+    public boolean isPendingCalderaCollapse() {
+        return pendingCalderaCollapse;
+    }
+
+    public void setPendingCalderaCollapse(boolean pendingCalderaCollapse) {
+        this.pendingCalderaCollapse = pendingCalderaCollapse;
+    }
+
     public int getPlumeHeight() {
         return plumeHeight;
     }
@@ -190,6 +217,9 @@ public final class VolcanoRecord {
         tag.putFloat("ActivityLevel", activityLevel);
         tag.putFloat("InfluenceRadius", influenceRadius);
         tag.putFloat("CraterBaseRadius", craterBaseRadius);
+        tag.putInt("CalderaDepth", calderaDepth);
+        tag.putInt("LastCollapseRimY", lastCollapseRimY);
+        tag.putBoolean("PendingCalderaCollapse", pendingCalderaCollapse);
         tag.putInt("PlumeHeight", plumeHeight);
         tag.putLong("LastSimGameTime", lastSimGameTime);
         tag.putInt("PendingLavaLayers", pendingLavaLayers);
@@ -216,6 +246,13 @@ public final class VolcanoRecord {
         if (tag.contains("CraterBaseRadius")) {
             record.craterBaseRadius = tag.getFloat("CraterBaseRadius");
         }
+        if (tag.contains("CalderaDepth")) {
+            record.calderaDepth = Math.max(2, Math.min(4, tag.getInt("CalderaDepth")));
+        }
+        if (tag.contains("LastCollapseRimY")) {
+            record.lastCollapseRimY = tag.getInt("LastCollapseRimY");
+        }
+        record.pendingCalderaCollapse = tag.getBoolean("PendingCalderaCollapse");
         record.plumeHeight = tag.getInt("PlumeHeight");
         record.lastSimGameTime = tag.getLong("LastSimGameTime");
         record.pendingLavaLayers = tag.getInt("PendingLavaLayers");

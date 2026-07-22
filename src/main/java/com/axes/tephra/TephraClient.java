@@ -12,9 +12,11 @@ import net.neoforged.fml.common.Mod;
 import net.neoforged.fml.event.lifecycle.FMLClientSetupEvent;
 import net.neoforged.neoforge.client.event.ClientTickEvent;
 import net.neoforged.neoforge.client.event.RegisterParticleProvidersEvent;
+import net.neoforged.neoforge.client.event.RenderLevelStageEvent;
 import net.neoforged.neoforge.client.event.ViewportEvent;
 import net.neoforged.neoforge.client.gui.ConfigurationScreen;
 import net.neoforged.neoforge.client.gui.IConfigScreenFactory;
+import com.mojang.blaze3d.systems.RenderSystem;
 
 @Mod(value = Tephra.MODID, dist = Dist.CLIENT)
 public class TephraClient {
@@ -76,6 +78,9 @@ public class TephraClient {
 
             event.registerSpriteSet(com.axes.tephra.registry.TephraParticleTypes.RECOVERY_ASH.get(),
                     com.axes.tephra.client.particle.VolcanoParticles.RecoveryAshParticle.Provider::new);
+
+            event.registerSpriteSet(com.axes.tephra.registry.TephraParticleTypes.FOUNTAIN_SMOKE.get(),
+                    com.axes.tephra.client.particle.VolcanoParticles.FountainSmokeParticle.Provider::new);
         }
     }
 
@@ -91,6 +96,19 @@ public class TephraClient {
             // Reset the calculation intensity threshold at the start of every tick
             // so volcanoes can dynamically refresh proximity math
             volcanoShakeIntensity = 0.0f;
+        }
+
+        /**
+         * Safety: restore depth/blend after particle passes (fountain smoke uses translucent
+         * blending; lava sparks disable blend in their batch).
+         */
+        @SubscribeEvent
+        public static void onAfterParticles(RenderLevelStageEvent event) {
+            if (event.getStage() == RenderLevelStageEvent.Stage.AFTER_PARTICLES) {
+                RenderSystem.enableDepthTest();
+                RenderSystem.depthMask(true);
+                RenderSystem.disableBlend();
+            }
         }
 
         @SubscribeEvent
